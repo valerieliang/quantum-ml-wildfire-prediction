@@ -1,7 +1,4 @@
 """
-Phase 1 — Validation Set (2022)
-2026 Quantum Sustainability Challenge: Wildfire Risk Modeling
-
 Builds the 2022 validation matrix with the same 17-feature schema as the
 training set (2018-2021).
 
