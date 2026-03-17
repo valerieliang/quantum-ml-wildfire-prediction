@@ -21,10 +21,11 @@
    - 7.1 [Why 2022 Is the Right Validation Year](#71-why-2022-is-the-right-validation-year)
    - 7.2 [Weather Imputation for 2022](#72-weather-imputation-for-2022)
    - 7.3 [Fire History for 2022](#73-fire-history-for-2022)
-8. [Output File Reference](#8-output-file-reference)
-9. [Feature Schema](#9-feature-schema)
-10. [Known Limitations and Caveats](#10-known-limitations-and-caveats)
-11. [Script Execution Order](#11-script-execution-order)
+8. [2023 Prediction Set (`generate_2023_prediction_set.py`)](#8-2023-prediction-set-generate_2023_prediction_setpy)
+9. [Output File Reference](#9-output-file-reference)
+10. [Feature Schema](#10-feature-schema)
+11. [Known Limitations and Caveats](#11-known-limitations-and-caveats)
+12. [Script Execution Order](#12-script-execution-order)
 
 ---
 
@@ -205,7 +206,7 @@ After filtering, **2,182 of 2,218 incidents** (36 excluded) qualify as unplanned
 
 The training set covers **2018–2021** — the only years where both fire incident labels and full monthly weather observations are available. The output is a flat feature matrix with one row per (zip code, year) combination.
 
-**Depends on:** `data/fires_geocoded.csv` (output of `zip_recovery.py` or `geocode_missing_zips.py`)
+**Depends on:** `data/fires_geocoded.csv` (output of `zip_recovery.py`)
 
 ### 6.1 Label Grid
 
@@ -374,7 +375,33 @@ These are the only features derived from actual observations (not estimates) in 
 
 ---
 
-## 8. Output File Reference
+## 8. 2023 Prediction Set (`generate_2023_prediction_set.py`)
+
+The 2023 prediction set is the final output of Phase 1 — the feature matrix the trained model will score to produce the wildfire risk predictions required by the challenge submission. Unlike the training and validation sets, it carries no labels because 2023 is the target year being predicted.
+
+**Feature availability for 2023:**
+
+| Feature group | Available | Source |
+|--------------|-----------|--------|
+| Weather features (13 cols) | Estimated | Per-zip climatological mean across 2018–2021 |
+| Fire history features (4 cols) | Yes (actual) | Lagged from 2020, 2021, 2022 incidents |
+
+The weather imputation strategy is identical to the one used for the 2022 validation set, which keeps the feature space consistent between validation and final prediction. This is important: a model that performs well on 2022 under estimated weather is being evaluated under the same conditions it will face on 2023.
+
+The fire history lookback for 2023 reaches the most recent real data available:
+
+| Feature | Source years |
+|---------|-------------|
+| `fires_last1` | 2022 incidents |
+| `fires_last3` | 2020, 2021, 2022 incidents |
+| `acres_last3` | 2020, 2021, 2022 acreage |
+| `years_since_fire` | Searches back to 2013 |
+
+**Output:** `predict_2023_features.csv` — 2,593 rows × 17 feature columns (plus `zip` and `year` for traceability), zero null values, same column order as `train_features.csv` and `val_features.csv`.
+
+---
+
+## 9. Output File Reference
 
 | File | Rows | Columns | Description |
 |------|------|---------|-------------|
@@ -384,25 +411,26 @@ These are the only features derived from actual observations (not estimates) in 
 | `train_labels.csv` | 10,372 | 3 | `zip`, `year`, `wildfire` binary label for 2018–2021 |
 | `val_features.csv` | 2,593 | 17 | Feature matrix for 2022 validation (weather columns are climatologically imputed) |
 | `val_labels.csv` | 2,593 | 3 | `zip`, `year`, `wildfire` binary label for 2022 |
+| `predict_2023_features.csv` | 2,593 | 19 | Feature matrix for 2023 prediction — 17 features plus `zip` and `year` columns; no labels |
 
 ---
 
-## 9. Feature Schema
+## 10. Feature Schema
 
 Both `train_features.csv` and `val_features.csv` share the same 17-column schema in the same column order.
 
 ```
-tmax_annual       — Annual mean max temperature (°C)
-tmin_annual       — Annual mean min temperature (°C)
+tmax_annual       — Annual mean max temperature (C)
+tmin_annual       — Annual mean min temperature (C)
 prcp_annual       — Annual total precipitation (mm)
-tmax_peak         — Single hottest monthly max temperature (°C)
+tmax_peak         — Single hottest monthly max temperature (C)
 prcp_min          — Single driest monthly total (mm)
-tmax_dry          — Jun–Oct mean max temperature (°C)
-tmin_dry          — Jun–Oct mean min temperature (°C)
+tmax_dry          — Jun–Oct mean max temperature (C)
+tmin_dry          — Jun–Oct mean min temperature (C)
 prcp_dry          — Jun–Oct total precipitation (mm)
 dry_months_dry    — Jun–Oct months with < 5 mm precip (count 0–5)
-tmax_wet          — Nov–May mean max temperature (°C)
-tmin_wet          — Nov–May mean min temperature (°C)
+tmax_wet          — Nov–May mean max temperature (C)
+tmin_wet          — Nov–May mean min temperature (C)
 prcp_wet          — Nov–May total precipitation (mm)
 dry_months_wet    — Nov–May months with < 5 mm precip (count 0–7)
 fires_last1       — Wildfire count in prior year (integer)
@@ -415,7 +443,7 @@ Labels file columns: `zip` (int), `year` (int), `wildfire` (0 or 1).
 
 ---
 
-## 10. Known Limitations and Caveats
+## 11. Known Limitations and Caveats
 
 **Zip code coverage gap in fire data.** The KD-tree centroid reference is built from only 559 of the 2,593 zip codes that appear in the weather table. The remaining 2,034 zips have no centroid reference because no fire has been recorded there. If a missing-zip fire falls near one of these uncovered zips, it will be incorrectly assigned to a different zip or dropped entirely. This bias affects only a small fraction of incidents and is partially mitigated by the API geocoding variant.
 
@@ -431,17 +459,13 @@ Labels file columns: `zip` (int), `year` (int), `wildfire` (0 or 1).
 
 ---
 
-## 11. Script Execution Order
+## 12. Script Execution Order
 
 Run scripts in the following order:
 
 ```bash
-# Step 1: Recover zip codes for the 337 missing-zip fire records
-#   Option A — KD-tree (no network required, ~seconds)
+# Step 1: Recover zip codes for the 337 missing-zip fire records using KD-tree
 python zip_recovery.py
-
-#   Option B — Census API (requires network access, ~2 minutes)
-python geocode_missing_zips.py
 
 # Step 2: Build training matrix (2018–2021)
 #   Input:  fires_geocoded.csv
@@ -452,6 +476,17 @@ python generate_training_data.py
 #   Input:  fires_geocoded.csv, train_features.csv, train_labels.csv
 #   Output: val_features.csv, val_labels.csv
 python generate_validation_set.py
+
+# Step 4: Build 2023 prediction matrix
+#   Input:  fires_geocoded.csv, train_features.csv, train_labels.csv
+#   Output: predict_2023_features.csv
+python generate_2023_prediction_set.py
 ```
 
-After these four steps, the `./data/` directory contains fully prepared, null-free feature matrices ready to be consumed by the Phase 2 classical baseline and Phase 3 QML model.
+After these steps, the directory contains fully prepared, null-free feature matrices ready for Phase 2.
+
+| Set | File | Purpose |
+|-----|------|---------|
+| Training | `train_features.csv` + `train_labels.csv` | Fit the model |
+| Validation | `val_features.csv` + `val_labels.csv` | Benchmark performance before final prediction |
+| Prediction | `predict_2023_features.csv` | Score with the trained model; output is the challenge submission |
