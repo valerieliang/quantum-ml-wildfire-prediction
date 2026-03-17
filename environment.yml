@@ -1,8 +1,0 @@
-name: quantum-wildfire
-channels:
-  - defaults
-  - conda-forge
-dependencies:
-  - python=3.14
-  - pandas
-  - numpy
