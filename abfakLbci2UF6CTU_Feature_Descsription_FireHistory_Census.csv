@@ -1,0 +1,56 @@
+"'YEAR_',",,Year of fire
+"'AGENCY',",,"CDF: California Department of Forestry and Fire Protection (also known as CAL FIRE)
+LRA: Local Responsibility Area (usually refers to areas where local agencies, not state or federal, have primary responsibility, especially for fire protection)
+CCO: County or City Office (sometimes used for local government offices, but context-dependent; could also mean Chief Compliance Officer in some settings)
+FWS: U.S. Fish and Wildlife Service
+USF: U.S. Forest Service (sometimes written as USFS)
+NPS: National Park Service
+BLM: Bureau of Land Management
+DIA: Defense Intelligence Agency
+DOD: Department of Defense
+OTH: Other (used as a catch-all for agencies not specifically listed)"
+"'UNIT_ID',",,"Used in wildfire and firefighting resource tracking systems, especially in the United States, to identify different types of firefighting units. Please find re-encoded numerical value in UNIT_ID_num. SKU:
+Usually stands for Strike Team Utility (sometimes ""Strike Team Utility Unit""). A strike team is a group of similar resources with a leader, such as engines or crews, used together for tactical assignments.
+
+BTU:
+Typically refers to Battalion Utility or Battalion Unit. A battalion is a group of fire companies or units under a battalion chief, often used for command and support.
+
+AEU:
+Stands for Amador-El Dorado Unit. This is a specific Cal Fire administrative unit covering Amador and El Dorado counties in California.
+
+BEU:
+Stands for San Benito-Monterey Unit. This is another Cal Fire administrative unit, covering San Benito and Monterey counties in California."
+"'FIRE_NAME',",,"Initial Location: Fires are typically named after a nearby geographic feature, such as a road, creek, mountain, or town where the fire was first reported or discovered (e.g., ""Camp Fire,"" ""Tubbs Fire,"" ""Dixie Fire""). Assigned by First Responders: The first responding agency (such as Cal Fire or the local fire department) usually assigns the name when the fire is first reported."
+"'INC_NUM',",,Incident Number: The incident number is a unique code or number assigned to each specific fire or emergency incident.
+"'ALARM_DATE',",,Fire Start Date
+"'CONT_DATE',",,Fire Contained Date 
+"'CAUSE',",,What caused fire
+"'C_METHOD',",,Collection Method
+"'OBJECTIVE',",,
+"'GIS_ACRES',",,The number of acres affected by a fire as calculated using Geographic Information System (GIS) technology.
+"'COMMENTS',",,
+"'COMPLEX_NA',",,
+"'FIRE_NUM',",,"FIRE_NUM is a unique identifier assigned to a specific fire incident. It is used in incident reporting systems, databases, and official documentation to track and reference individual fires."
+"'COMPLEX_ID',",,Complex ID refers to a unique identifier assigned to a fire complex—a situation where multiple individual fires are managed together as a single incident. A fire complex is a group of two or more fires in the same general area that are close enough to be managed under one incident command structure.
+"'DECADES',",,Decade that fire started. Ex. 2020-January
+"'Shape__Are',",,"shape_are is an attribute field commonly found in GIS shapefiles or geodatabases. It automatically stores the area measurement of each polygon feature (e.g., the boundary of a wildfire).When mapping fire perimeters, each fire boundary is represented as a polygon.
+The shape_are field provides the area of that polygon, which can be used to estimate the size of the fire."
+"'Shape__Len',",,"It refers to the calculated length of a geographic feature’s boundary. 
+Fire Perimeters: The shape_len value tells you the total distance around the fire’s edge, which is important for planning containment strategies and resource allocation."
+"'latitude',",,"Latitude is a geographic coordinate, measured in degrees, that indicates how far north or south a location is from the Equator."
+"'longitude',",,"Longitude is a geographic coordinate, measured in degrees, indicating a location’s east-west position relative to the Prime Meridian."
+"'zip_code',",,Five-digit postal code used by the USPS to identify specific geographic delivery areas in the United States.
+Census Data,,Below is Census Data
+"'total_population',",,"Census ACS 5 Year Data: Represents the total number of people residing in a geographic area, serving as a fundamental count for demographic analysis and resource allocation; data type: integer."
+"'median_income',",,"Census ACS 5 Year Data: Indicates the middle value of household incomes in a given area, providing a key measure of economic well-being and used to assess income distribution; data type: integer (in dollars)."
+"'total_housing_units',",,"Census ACS 5 Year Data: Counts all residential units, both occupied and vacant, within a specified geography, offering insight into housing stock and urban development; data type: integer."
+"'average_household_size',",,"Census ACS 5 Year Data: Reflects the mean number of people living in occupied housing units, useful for understanding household composition and planning community services; data type: float."
+"'educational_attainment',",,"Census ACS 5 Year Data: Categorizes the highest level of education completed by individuals aged 25 and over, such as ""high school graduate"" or ""bachelor’s degree,"" informing workforce and socioeconomic studies; data type: categorical."
+"'language_spoken_at_home',",,"Census ACS 5 Year Data: Identifies the primary language spoken in households, such as ""English only"" or ""Spanish,"" aiding in language access planning and cultural analysis; data type: categorical."
+"'poverty_status',",,"Census ACS 5 Year Data: Indicates whether individuals or families fall below the federally defined poverty threshold, supporting assessments of economic hardship and eligibility for assistance programs; data type: binary or categorical."
+"'housing_occupancy',",,"Census ACS 5 Year Data: Distinguishes between occupied and vacant housing units, essential for evaluating housing availability and market conditions; data type: categorical."
+"'housing_value',",,"Census ACS 5 Year Data: Reports the estimated dollar value of owner-occupied housing units, commonly used in real estate market analyses and affordability studies; data type: integer (in dollars)."
+"'year_structure_built',",,"Census ACS 5 Year Data: Specifies the period or year when a housing unit was constructed, providing context for housing age, infrastructure needs, and historical development; data type: categorical or integer."
+"'housing_vacancy_rate',",,"Census ACS 5 Year Data: Measures the percentage of unoccupied housing units relative to the total housing stock, indicating housing market tightness or surplus; data type: float (percentage)."
+"'median_monthly_housing_costs',",,"Census ACS 5 Year Data: Represents the median monthly cost for housing, including rent or owner costs with mortgage, used to assess affordability and cost burden; data type: integer (in dollars)."
+owner_vs_renter_occupied',,"Census ACS 5 Year Data: Classifies occupied housing units by tenure, distinguishing between owner-occupied and renter-occupied, which is vital for housing policy and market segmentation; data type: categorical."
