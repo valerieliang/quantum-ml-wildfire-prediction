@@ -406,12 +406,17 @@ The fire history lookback for 2023 reaches the most recent real data available:
 | File | Rows | Columns | Description |
 |------|------|---------|-------------|
 | `wildfire_weather.csv` | 125,476 | 30 | Raw source file — fire incident rows and monthly weather rows interleaved |
-| `fires_geocoded.csv` | 2,160 | 33 | Wildfire table with zip codes recovered via KD-tree and prescribed burns filtered out |
+| `fires_geocoded.csv` | 2,149 | 33 | Wildfire table with zip codes recovered via KD-tree, out-of-state zips removed, and prescribed burns filtered out |
 | `train_features.csv` | 10,372 | 17 | Feature matrix for model training (2018–2021) |
 | `train_labels.csv` | 10,372 | 3 | `zip`, `year`, `wildfire` binary label for 2018–2021 |
 | `val_features.csv` | 2,593 | 17 | Feature matrix for 2022 validation (weather columns are climatologically imputed) |
 | `val_labels.csv` | 2,593 | 3 | `zip`, `year`, `wildfire` binary label for 2022 |
 | `predict_2023_features.csv` | 2,593 | 19 | Feature matrix for 2023 prediction — 17 features plus `zip` and `year` columns; no labels |
+| `pca_train.csv` | 10,372 | 8 | PCA-reduced training set — `zip`, `year`, `wildfire` + PC1–PC5; input to VQC and classical baseline |
+| `pca_val.csv` | 2,593 | 8 | PCA-reduced validation set — same schema as `pca_train.csv` |
+| `pca_predict_2023.csv` | 2,593 | 7 | PCA-reduced 2023 prediction set — `zip`, `year` + PC1–PC5; no label column |
+| `pca_scaler.joblib` | — | — | Fitted `StandardScaler` (fit on training data only); required to transform new data at inference |
+| `pca_model.joblib` | — | — | Fitted `PCA(n_components=5)` object; required to transform new data at inference |
 
 ---
 
@@ -481,6 +486,13 @@ python generate_validation_set.py
 #   Input:  fires_geocoded.csv, train_features.csv, train_labels.csv
 #   Output: predict_2023_features.csv
 python generate_2023_prediction_set.py
+
+# Step 5: Dimensionality reduction via PCA
+#   Input:  train_features.csv, val_features.csv, predict_2023_features.csv
+#   Output: pca_train.csv, pca_val.csv, pca_predict_2023.csv,
+#           pca_scaler.joblib, pca_model.joblib
+#   See:    2_pca_preprocessing.md for design decisions and output details
+python perform_pca.py
 ```
 
 After these steps, the directory contains fully prepared, null-free feature matrices ready for Phase 2.
@@ -490,3 +502,5 @@ After these steps, the directory contains fully prepared, null-free feature matr
 | Training | `train_features.csv` + `train_labels.csv` | Fit the model |
 | Validation | `val_features.csv` + `val_labels.csv` | Benchmark performance before final prediction |
 | Prediction | `predict_2023_features.csv` | Score with the trained model; output is the challenge submission |
+
+After step 5, PCA-reduced versions of all three sets are also available (`pca_train.csv`, `pca_val.csv`, `pca_predict_2023.csv`). These are the direct inputs to the VQC and classical baseline models. See **`2_pca_preprocessing.md`** for the full PCA design rationale, transform choices, and variance analysis.
