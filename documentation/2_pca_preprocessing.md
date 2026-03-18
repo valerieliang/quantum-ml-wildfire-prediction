@@ -173,7 +173,7 @@ Exact component loadings can be inspected from the saved PCA object:
 
 ```python
 import joblib
-pca = joblib.load("data/pca_model.joblib")
+pca = joblib.load("pca/pca_model.joblib")
 print(pca.components_)   # shape: (5, 17) — one loading vector per PC
 ```
 
@@ -245,11 +245,11 @@ import numpy as np
 import pandas as pd
 
 # Load fitted objects
-scaler = joblib.load("data/pca_scaler.joblib")
-pca    = joblib.load("data/pca_model.joblib")
+scaler = joblib.load("pca/pca_scaler.joblib")
+pca    = joblib.load("pca/pca_model.joblib")
 
 # Load new feature data (must have the same 17 columns in the same order)
-new_data = pd.read_csv("data/predict_2023_features.csv")
+new_data = pd.read_csv("pca/predict_2023_features.csv")
 X_new    = new_data.drop(columns=["zip", "year"]).copy()
 
 # Apply the same log1p transform used during training
@@ -330,5 +330,5 @@ Total variance explained by 5 components: 0.8789
 All sanity checks passed.
 ```
 
-After this step the pipeline is complete and the outputs in `data/` are ready
+After this step the pipeline is complete and the outputs in `pca/` are ready
 for Phase 3 (classical baseline) and Phase 4 (VQC).
