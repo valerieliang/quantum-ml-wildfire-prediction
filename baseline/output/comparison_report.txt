@@ -1,0 +1,75 @@
+================================================================
+  CLASSICAL BASELINE COMPARISON -- Task 1B
+  2026 Quantum Sustainability Challenge
+================================================================
+
+  Validation set: 2,593 zip codes (year 2022)
+  Positive rate : 6.9% (180 fire zips)
+  Note: weather features for 2022 are estimated from 2018-2021
+        climatological means -- see generate_validation_set.py
+
+
+  METRICS TABLE
+  --------------------------------------------------------------
+  Model                   Thresh      F1    Prec  Recall   AUC-ROC
+  --------------------------------------------------------------
+  LogisticRegression         0.3  0.2075  0.1168  0.9278    0.8518
+  LogisticRegression         0.5  0.3651  0.2396  0.7667    0.8518
+  XGBoost                    0.3  0.1633  0.0895  0.9333    0.8065
+  XGBoost                    0.5  0.1717  0.0948  0.9056    0.8065
+  --------------------------------------------------------------
+
+
+  CONFUSION MATRICES  (threshold = 0.5)
+  --------------------------------------------------------------
+
+  LogisticRegression
+                 Predicted 0    Predicted 1
+    Actual 0         1975            438    (no fire)
+    Actual 1           42            138    (fire)
+    Fires caught: 138/180 (77%)   False alarms: 438/2413 (18.2%)
+
+  XGBoost
+                 Predicted 0    Predicted 1
+    Actual 0          857           1556    (no fire)
+    Actual 1           17            163    (fire)
+    Fires caught: 163/180 (91%)   False alarms: 1556/2413 (64.5%)
+
+
+  CLASSIFICATION REPORTS  (threshold = 0.5)
+  --------------------------------------------------------------
+
+  LogisticRegression
+                  precision    recall  f1-score   support
+    
+         no fire       0.98      0.82      0.89      2413
+            fire       0.24      0.77      0.37       180
+    
+        accuracy                           0.81      2593
+       macro avg       0.61      0.79      0.63      2593
+    weighted avg       0.93      0.81      0.86      2593
+
+  XGBoost
+                  precision    recall  f1-score   support
+    
+         no fire       0.98      0.36      0.52      2413
+            fire       0.09      0.91      0.17       180
+    
+        accuracy                           0.39      2593
+       macro avg       0.54      0.63      0.35      2593
+    weighted avg       0.92      0.39      0.50      2593
+
+
+  KEY OBSERVATIONS FOR TASK 1B
+  --------------------------------------------------------------
+
+  Best F1       : LogisticRegression at threshold 0.5  (F1=0.3651)
+  Best AUC-ROC  : LogisticRegression  (AUC=0.8518)
+
+  For insurance/risk applications, recall is the priority metric:
+  a missed fire zip (false negative) means an underpriced policy;
+  a false alarm (false positive) means a marginally higher premium.
+
+  QML benchmark target: F1 > 0.3651, AUC-ROC > 0.8518
+
+================================================================
