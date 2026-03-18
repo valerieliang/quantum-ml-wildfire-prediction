@@ -1,0 +1,27 @@
+{
+  "mode": "pca",
+  "n_qubits": 8,
+  "label_col": "wildfire",
+  "input_paths": {
+    "train": "pca/pca_train.csv",
+    "val": "pca/pca_val.csv",
+    "predict_2023": "pca/pca_predict_2023.csv"
+  },
+  "output_paths": {
+    "qml_train": "qml/qml_train.csv",
+    "qml_val": "qml/qml_val.csv",
+    "qml_predict_2023": "qml/qml_predict_2023.csv"
+  },
+  "selected_features": [
+    "PC1",
+    "PC2",
+    "PC3",
+    "PC4",
+    "PC5"
+  ],
+  "n_selected_features": 5,
+  "method_details": {
+    "pca_applied": false,
+    "reason": "already within qubit budget"
+  }
+}

@@ -21,6 +21,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--val", default="pca/pca_val.csv")
     parser.add_argument("--predict-2023", default="pca/pca_predict_2023.csv")
     parser.add_argument("--label-col", default="wildfire")
+    # can do importance mode later, it will go directly from input csv to top n features
     parser.add_argument("--mode", choices=["pca", "importance"], default="pca")
     parser.add_argument("--n-qubits", type=int, default=8)
     parser.add_argument(
