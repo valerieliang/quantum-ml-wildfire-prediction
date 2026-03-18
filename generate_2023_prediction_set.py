@@ -37,11 +37,11 @@ from pathlib import Path
 
 # Config
 
-RAW_PATH        = "wildfire_weather.csv"
-FIRES_PATH      = "fires_geocoded.csv"
-TRAIN_FEAT_PATH = "train_features.csv"
-TRAIN_LAB_PATH  = "train_labels.csv"
-OUTPUT_DIR      = Path(".")
+RAW_PATH        = "data/wildfire_weather.csv"
+FIRES_PATH      = "data/fires_geocoded.csv"
+TRAIN_FEAT_PATH = "data/train_features.csv"
+TRAIN_LAB_PATH  = "data/train_labels.csv"
+OUTPUT_DIR      = Path("data/")
 OUTPUT_DIR.mkdir(exist_ok=True)
 
 PRED_YEAR = 2023
