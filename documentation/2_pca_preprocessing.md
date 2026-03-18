@@ -299,10 +299,10 @@ alternatives if model performance is unsatisfactory.
 
 ## 10. Script Execution
 
-`perform_pca.py` must be run after all four Phase 1 scripts have completed:
+`perform_pca.py` must be run after all four data preparation scripts have completed:
 
 ```bash
-# Prerequisite: all Phase 1 outputs must exist
+# Prerequisite: all step 1 outputs must exist
 # (see 1_data_preparation.md for the full pipeline)
 
 python perform_pca.py
