@@ -1,5 +1,4 @@
-#!/usr/bin/env python3
-"""Step 4: train a PennyLane quantum-kernel estimator + SVM."""
+"""train a PennyLane quantum-kernel estimator + SVM."""
 
 from __future__ import annotations
 
@@ -18,6 +17,13 @@ except ImportError as exc:  # pragma: no cover
     raise SystemExit(
         "PennyLane is required for QKE. Install with `pip install pennylane`."
     ) from exc
+
+
+# Insurance recall-priority operating threshold.
+# Matches the classical baseline recommendation (3_classical_baseline.md §5):
+# at t=0.3, LR catches 93% of fire zip codes while flagging 52% of non-fire zips.
+# Max-F1 (~0.8) sacrifices 40% recall, which an insurer cannot accept.
+OPERATING_THRESHOLD = 0.3
 
 
 def parse_args() -> argparse.Namespace:
@@ -67,7 +73,17 @@ def main() -> None:
     X_pred = pred_df[feature_cols].to_numpy(dtype=float)
 
     if len(X_train_full) > args.max_train_samples:
-        idx = rng.choice(len(X_train_full), size=args.max_train_samples, replace=False)
+        # Stratified subsample: the training set is ~9% positive. A random draw of
+        # 800 rows yields only ~72 positives on average — the SVM kernel matrix will
+        # barely see the minority class. Preserve the positive rate explicitly.
+        pos_idx = np.where(y_train_full == 1)[0]
+        neg_idx = np.where(y_train_full == 0)[0]
+        n_pos = max(1, round(args.max_train_samples * len(pos_idx) / len(y_train_full)))
+        n_neg = args.max_train_samples - n_pos
+        chosen_pos = rng.choice(pos_idx, size=min(n_pos, len(pos_idx)), replace=False)
+        chosen_neg = rng.choice(neg_idx, size=min(n_neg, len(neg_idx)), replace=False)
+        idx = np.concatenate([chosen_pos, chosen_neg])
+        rng.shuffle(idx)
         X_train = X_train_full[idx]
         y_train = y_train_full[idx]
         sampled_train = train_df.iloc[idx].reset_index(drop=True)
@@ -84,8 +100,24 @@ def main() -> None:
 
     @qml.qnode(dev)
     def kernel_circuit(x1: np.ndarray, x2: np.ndarray) -> np.ndarray:
+        # IQP-style feature map: AngleEmbedding followed by ZZ-type entanglement
+        # (CZ + second rotation layer). This is the standard quantum kernel construction
+        # used in Havlíček et al. (2019). Without entanglement, the kernel reduces to
+        # a classical dot product — the quantum circuit adds no advantage.
+        #
+        # U(x)|0⟩: encode x1 with entanglement
         qml.AngleEmbedding(x1, wires=range(n_qubits), rotation="Y")
+        for i in range(n_qubits - 1):
+            qml.CZ(wires=[i, i + 1])
+        qml.RZ(x1[0] * x1[-1], wires=0)   # cross-feature interaction term
+        #
+        # U†(x2)|: apply adjoint encoding of x2 with same entanglement structure
+        qml.RZ(-(x2[0] * x2[-1]), wires=0)
+        for i in reversed(range(n_qubits - 1)):
+            qml.CZ(wires=[i, i + 1])
         qml.adjoint(qml.AngleEmbedding)(x2, wires=range(n_qubits), rotation="Y")
+        #
+        # K(x1, x2) = |⟨0|U†(x2)U(x1)|0⟩|² = prob of measuring all-zeros state
         return qml.probs(wires=range(n_qubits))
 
     def kernel(x1: np.ndarray, x2: np.ndarray) -> float:
@@ -109,18 +141,22 @@ def main() -> None:
     sweep_df, best_f1_thr, best_prec_rec50_thr = threshold_sweep(y_val, val_prob)
     sweep_df.to_csv(out_dir / "threshold_sweep.csv", index=False)
 
+    # Insurance objective: recall-priority threshold (t=0.3).
+    # Max-F1 (~0.8) sacrifices ~40% recall — unacceptable for an insurer who needs
+    # to catch fire zip codes to avoid underpriced policies.
+    metrics_operating = compute_metrics_at_threshold(y_val, val_prob, OPERATING_THRESHOLD)
+    # Also compute max-F1 metrics for the full sweep comparison / Task 1B writeup.
     metrics_best_f1 = compute_metrics_at_threshold(y_val, val_prob, best_f1_thr)
-    metrics_best_prec_rec50 = compute_metrics_at_threshold(y_val, val_prob, best_prec_rec50_thr)
 
     val_out = val_df[["zip", "year", args.label_col]].copy()
     val_out["wildfire_prob"] = val_prob
-    val_out["wildfire_pred"] = (val_prob >= best_f1_thr).astype(int)
+    val_out["wildfire_pred"] = (val_prob >= OPERATING_THRESHOLD).astype(int)
     val_out.to_csv(out_dir / "val_predictions.csv", index=False)
 
     pred_prob = clf.predict_proba(K_pred)[:, 1]
     pred_out = pred_df[["zip", "year"]].copy()
     pred_out["wildfire_prob"] = pred_prob
-    pred_out["wildfire_pred"] = (pred_prob >= best_f1_thr).astype(int)
+    pred_out["wildfire_pred"] = (pred_prob >= OPERATING_THRESHOLD).astype(int)
     pred_out.to_csv(out_dir / "predict_2023_predictions.csv", index=False)
 
     sampled_train[["zip", "year", args.label_col]].to_csv(out_dir / "train_sample_used.csv", index=False)
@@ -129,6 +165,7 @@ def main() -> None:
         "model": "PennyLaneQKE+SVC",
         "feature_cols": feature_cols,
         "n_qubits": n_qubits,
+        "kernel": "IQP-AngleEmbedding+CZ+cross-term",
         "seed": args.seed,
         "svm_c": args.svm_c,
         "n_train_used": int(len(X_train)),
@@ -136,19 +173,26 @@ def main() -> None:
         "n_val": int(len(X_val)),
         "n_predict_2023": int(len(X_pred)),
         "threshold_selection": {
-            "selected_for_predictions": "max_f1",
+            # t=0.3 is the insurance operating threshold: maximise recall (catching fire
+            # zip codes) while keeping false alarm rate at an acceptable level.
+            # Matches the classical baseline recommended threshold from 3_classical_baseline.md.
+            "operating_threshold": OPERATING_THRESHOLD,
+            "selected_for_predictions": "insurance_recall_priority",
             "best_f1_threshold": float(best_f1_thr),
             "best_precision_with_recall_ge_0_5_threshold": float(best_prec_rec50_thr),
             "recall_constraint_feasible": bool((sweep_df["recall"] >= 0.5).any()),
         },
+        "metrics_val_operating_threshold": metrics_operating,
         "metrics_val_best_f1": metrics_best_f1,
-        "metrics_val_best_precision_recall_ge_0_5": metrics_best_prec_rec50,
     }
 
     with (out_dir / "metrics.json").open("w", encoding="utf-8") as f:
         json.dump(metrics, f, indent=2)
 
     print(f"Saved QKE artifacts to: {out_dir}")
+    print(f"\n--- Metrics at operating threshold (t={OPERATING_THRESHOLD}, insurance recall-priority) ---")
+    print(json.dumps(metrics_operating, indent=2))
+    print(f"\n--- Metrics at best-F1 threshold (t={best_f1_thr:.2f}, for Task 1B comparison) ---")
     print(json.dumps(metrics_best_f1, indent=2))
 
 

@@ -1,5 +1,4 @@
-#!/usr/bin/env python3
-"""Step 4: train a PennyLane variational quantum classifier (VQC)."""
+"""train a PennyLane variational quantum classifier (VQC)."""
 
 from __future__ import annotations
 
@@ -18,6 +17,13 @@ except ImportError as exc:  # pragma: no cover
     raise SystemExit(
         "PennyLane is required for VQC. Install with `pip install pennylane`."
     ) from exc
+
+
+# Insurance recall-priority operating threshold.
+# Matches the classical baseline recommendation (3_classical_baseline.md §5):
+# at t=0.3, LR catches 93% of fire zip codes while flagging 52% of non-fire zips.
+# Max-F1 (~0.8) sacrifices 40% recall, which an insurer cannot accept.
+OPERATING_THRESHOLD = 0.3
 
 
 def parse_args() -> argparse.Namespace:
@@ -70,7 +76,17 @@ def main() -> None:
     X_pred = pred_df[feature_cols].to_numpy(dtype=float)
 
     if len(X_train_full) > args.max_train_samples:
-        idx = rng.choice(len(X_train_full), size=args.max_train_samples, replace=False)
+        # Stratified subsample: preserve the ~9% positive rate from the full training set.
+        # A purely random draw of 1024 rows would yield only ~93 positives on average,
+        # making pos_weight correction noisier than necessary.
+        pos_idx = np.where(y_train_full == 1)[0]
+        neg_idx = np.where(y_train_full == 0)[0]
+        n_pos = max(1, round(args.max_train_samples * len(pos_idx) / len(y_train_full)))
+        n_neg = args.max_train_samples - n_pos
+        chosen_pos = rng.choice(pos_idx, size=min(n_pos, len(pos_idx)), replace=False)
+        chosen_neg = rng.choice(neg_idx, size=min(n_neg, len(neg_idx)), replace=False)
+        idx = np.concatenate([chosen_pos, chosen_neg])
+        rng.shuffle(idx)
         X_train = X_train_full[idx]
         y_train = y_train_full[idx]
     else:
@@ -120,16 +136,17 @@ def main() -> None:
 
         if epoch == 1 or epoch % 5 == 0 or epoch == args.epochs:
             val_prob_epoch = predict_scores(X_val, weights)
-            sweep_df, best_thr, _ = threshold_sweep(y_val, val_prob_epoch)
-            best_metrics = compute_metrics_at_threshold(y_val, val_prob_epoch, best_thr)
+            # Monitor at the insurance operating threshold (recall-priority, t=0.3)
+            # rather than max-F1, so the training history reflects the actual objective.
+            ins_metrics = compute_metrics_at_threshold(y_val, val_prob_epoch, OPERATING_THRESHOLD)
             history.append(
                 {
                     "epoch": epoch,
                     "batch_loss": float(batch_loss),
-                    "val_f1": float(best_metrics["f1"]),
-                    "val_precision": float(best_metrics["precision"]),
-                    "val_recall": float(best_metrics["recall"]),
-                    "best_threshold": float(best_thr),
+                    "val_f1": float(ins_metrics["f1"]),
+                    "val_precision": float(ins_metrics["precision"]),
+                    "val_recall": float(ins_metrics["recall"]),
+                    "threshold": OPERATING_THRESHOLD,
                 }
             )
 
@@ -137,18 +154,23 @@ def main() -> None:
     sweep_df, best_f1_thr, best_prec_rec50_thr = threshold_sweep(y_val, val_prob)
     sweep_df.to_csv(out_dir / "threshold_sweep.csv", index=False)
 
+    # Insurance objective: recall-priority threshold (t=0.3).
+    # Max-F1 (~0.8) sacrifices ~40% recall — missing fire zip codes that become
+    # underpriced policies. t=0.3 is the recommended operating point from the
+    # classical baseline evaluation (93% recall, 52% false alarm rate for LR).
+    metrics_operating = compute_metrics_at_threshold(y_val, val_prob, OPERATING_THRESHOLD)
+    # Also compute max-F1 metrics for the full sweep comparison / Task 1B writeup.
     metrics_best_f1 = compute_metrics_at_threshold(y_val, val_prob, best_f1_thr)
-    metrics_best_prec_rec50 = compute_metrics_at_threshold(y_val, val_prob, best_prec_rec50_thr)
 
     val_out = val_df[["zip", "year", args.label_col]].copy()
     val_out["wildfire_prob"] = val_prob
-    val_out["wildfire_pred"] = (val_prob >= best_f1_thr).astype(int)
+    val_out["wildfire_pred"] = (val_prob >= OPERATING_THRESHOLD).astype(int)
     val_out.to_csv(out_dir / "val_predictions.csv", index=False)
 
     pred_prob = predict_scores(X_pred, weights)
     pred_out = pred_df[["zip", "year"]].copy()
     pred_out["wildfire_prob"] = pred_prob
-    pred_out["wildfire_pred"] = (pred_prob >= best_f1_thr).astype(int)
+    pred_out["wildfire_pred"] = (pred_prob >= OPERATING_THRESHOLD).astype(int)
     pred_out.to_csv(out_dir / "predict_2023_predictions.csv", index=False)
 
     np.savez(out_dir / "model_params.npz", weights=np.asarray(weights))
@@ -170,19 +192,26 @@ def main() -> None:
             "pos_weight": float(pos_weight),
         },
         "threshold_selection": {
-            "selected_for_predictions": "max_f1",
+            # t=0.3 is the insurance operating threshold: maximise recall (catching fire
+            # zip codes) while keeping false alarm rate at an acceptable level.
+            # Matches the classical baseline recommended threshold from 3_classical_baseline.md.
+            "operating_threshold": OPERATING_THRESHOLD,
+            "selected_for_predictions": "insurance_recall_priority",
             "best_f1_threshold": float(best_f1_thr),
             "best_precision_with_recall_ge_0_5_threshold": float(best_prec_rec50_thr),
             "recall_constraint_feasible": bool((sweep_df["recall"] >= 0.5).any()),
         },
+        "metrics_val_operating_threshold": metrics_operating,
         "metrics_val_best_f1": metrics_best_f1,
-        "metrics_val_best_precision_recall_ge_0_5": metrics_best_prec_rec50,
     }
 
     with (out_dir / "metrics.json").open("w", encoding="utf-8") as f:
         json.dump(metrics, f, indent=2)
 
     print(f"Saved VQC artifacts to: {out_dir}")
+    print(f"\n--- Metrics at operating threshold (t={OPERATING_THRESHOLD}, insurance recall-priority) ---")
+    print(json.dumps(metrics_operating, indent=2))
+    print(f"\n--- Metrics at best-F1 threshold (t={best_f1_thr:.2f}, for Task 1B comparison) ---")
     print(json.dumps(metrics_best_f1, indent=2))
 
 

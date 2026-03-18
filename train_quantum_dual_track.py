@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Run both quantum tracks (VQC + QKE) on the same quantum-ready feature set."""
 
 from __future__ import annotations
