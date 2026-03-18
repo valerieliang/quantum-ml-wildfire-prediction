@@ -1,0 +1,130 @@
+================================================================
+  BASELINE MODEL COMPARISON -- Task 1B
+  2026 Quantum Sustainability Challenge
+================================================================
+
+  Validation set : 2,593 zip codes (year 2022)
+  Positive rate  : 6.9% (180 fire zips)
+  Models         : LogisticRegression, RandomForest, XGBoost
+
+  Note: weather features for 2022 are estimated from 2018-2021
+        climatological means -- see generate_validation_set.py
+
+
+  THRESHOLD SWEEP  (F1 / precision / recall at every 0.1 step)
+  --------------------------------------------------------------
+  Model                   Thresh      F1    Prec  Recall   AUC-ROC
+  --------------------------------------------------------------
+  LogisticRegression         0.1  0.1298  0.0694  1.0000    0.8518
+  LogisticRegression         0.2  0.1298  0.0694  1.0000    0.8518
+  LogisticRegression         0.3  0.2075  0.1168  0.9278    0.8518
+  LogisticRegression         0.4  0.2683  0.1587  0.8667    0.8518
+  LogisticRegression         0.5  0.3651  0.2396  0.7667    0.8518
+  LogisticRegression         0.6  0.3964  0.2709  0.7389    0.8518
+  LogisticRegression         0.7  0.4084  0.2883  0.7000    0.8518
+  LogisticRegression         0.8  0.4254  0.3313  0.5944    0.8518
+  LogisticRegression         0.9  0.3556  0.3556  0.3556    0.8518
+
+  RandomForest               0.1  0.1307  0.0699  1.0000    0.7760
+  RandomForest               0.2  0.1430  0.0771  0.9833    0.7760
+  RandomForest               0.3  0.1488  0.0806  0.9667    0.7760
+  RandomForest               0.4  0.1582  0.0864  0.9333    0.7760
+  RandomForest               0.5  0.1830  0.1029  0.8278    0.7760
+  RandomForest               0.6  0.2623  0.1623  0.6833    0.7760
+  RandomForest               0.7  0.3328  0.2346  0.5722    0.7760
+  RandomForest               0.8  0.3281  0.3088  0.3500    0.7760
+  RandomForest               0.9  0.2383  0.5091  0.1556    0.7760
+
+  XGBoost                    0.1  0.1415  0.0763  0.9833    0.8065
+  XGBoost                    0.2  0.1488  0.0806  0.9667    0.8065
+  XGBoost                    0.3  0.1633  0.0895  0.9333    0.8065
+  XGBoost                    0.4  0.1640  0.0899  0.9278    0.8065
+  XGBoost                    0.5  0.1717  0.0948  0.9056    0.8065
+  XGBoost                    0.6  0.2107  0.1198  0.8722    0.8065
+  XGBoost                    0.7  0.2557  0.1533  0.7722    0.8065
+  XGBoost                    0.8  0.3684  0.2617  0.6222    0.8065
+  XGBoost                    0.9  0.3397  0.3351  0.3444    0.8065
+  --------------------------------------------------------------
+
+
+  BEST THRESHOLD PER MODEL  (chosen by maximum F1)
+  --------------------------------------------------------------
+  Model                   Best t      F1    Prec  Recall   AUC-ROC
+  --------------------------------------------------------------
+  LogisticRegression         0.8  0.4254  0.3313  0.5944    0.8518
+  RandomForest               0.7  0.3328  0.2346  0.5722    0.7760
+  XGBoost                    0.8  0.3684  0.2617  0.6222    0.8065
+  --------------------------------------------------------------
+
+
+  CONFUSION MATRICES  (at each model's best-F1 threshold)
+  --------------------------------------------------------------
+
+  LogisticRegression  (threshold = 0.8)
+                 Predicted 0    Predicted 1
+    Actual 0         2197            216    (no fire)
+    Actual 1           73            107    (fire)
+    Fires caught : 107/180 (59%)    False alarms : 216/2413 (9.0%)
+
+  RandomForest  (threshold = 0.7)
+                 Predicted 0    Predicted 1
+    Actual 0         2077            336    (no fire)
+    Actual 1           77            103    (fire)
+    Fires caught : 103/180 (57%)    False alarms : 336/2413 (13.9%)
+
+  XGBoost  (threshold = 0.8)
+                 Predicted 0    Predicted 1
+    Actual 0         2097            316    (no fire)
+    Actual 1           68            112    (fire)
+    Fires caught : 112/180 (62%)    False alarms : 316/2413 (13.1%)
+
+
+  CLASSIFICATION REPORTS  (at each model's best-F1 threshold)
+  --------------------------------------------------------------
+
+  LogisticRegression  (threshold = 0.8)
+                  precision    recall  f1-score   support
+    
+         no fire       0.97      0.91      0.94      2413
+            fire       0.33      0.59      0.43       180
+    
+        accuracy                           0.89      2593
+       macro avg       0.65      0.75      0.68      2593
+    weighted avg       0.92      0.89      0.90      2593
+
+  RandomForest  (threshold = 0.7)
+                  precision    recall  f1-score   support
+    
+         no fire       0.96      0.86      0.91      2413
+            fire       0.23      0.57      0.33       180
+    
+        accuracy                           0.84      2593
+       macro avg       0.60      0.72      0.62      2593
+    weighted avg       0.91      0.84      0.87      2593
+
+  XGBoost  (threshold = 0.8)
+                  precision    recall  f1-score   support
+    
+         no fire       0.97      0.87      0.92      2413
+            fire       0.26      0.62      0.37       180
+    
+        accuracy                           0.85      2593
+       macro avg       0.62      0.75      0.64      2593
+    weighted avg       0.92      0.85      0.88      2593
+
+
+  KEY OBSERVATIONS FOR TASK 1B
+  --------------------------------------------------------------
+
+  Best F1      : LogisticRegression  (F1=0.4254 at threshold=0.8)
+  Best AUC-ROC : LogisticRegression  (AUC=0.8518)
+
+  For insurance/risk applications, recall is the priority metric:
+  a missed fire zip (false negative) means an underpriced policy;
+  a false alarm (false positive) means a marginally higher premium.
+
+  QML benchmark targets (beat best classical at best threshold):
+    F1       > 0.4254
+    AUC-ROC  > 0.8518
+
+================================================================
