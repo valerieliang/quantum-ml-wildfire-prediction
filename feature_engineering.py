@@ -412,3 +412,5 @@ if __name__ == "__main__":
 
     checks = sanity_check_feature_matrix(matrix, fires)
     print("Sanity checks:", checks)
+    matrix.to_csv("feature_matrix.csv")
+
