@@ -27,12 +27,12 @@
     "recall_constraint_feasible": true
   },
   "score_orientation": {
-    "auc_before_orientation_check": 0.3065973661187088,
+    "auc_before_orientation_check": 0.306581249712207,
     "orientation_flipped": true
   },
   "metrics_val_operating_threshold": {
-    "roc_auc": 0.6934026338812912,
-    "pr_auc": 0.173085112596002,
+    "roc_auc": 0.6934152967721141,
+    "pr_auc": 0.17310965484274574,
     "accuracy": 0.4600848438102584,
     "precision": 0.09224598930481283,
     "recall": 0.7666666666666667,
@@ -45,8 +45,8 @@
     "n_predicted_positive": 1496
   },
   "metrics_val_best_f1": {
-    "roc_auc": 0.6934026338812912,
-    "pr_auc": 0.173085112596002,
+    "roc_auc": 0.6934152967721141,
+    "pr_auc": 0.17310965484274574,
     "accuracy": 0.8596220593906672,
     "precision": 0.21428571428571427,
     "recall": 0.38333333333333336,

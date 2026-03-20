@@ -18,6 +18,8 @@ from sklearn.metrics import (
     roc_auc_score,
 )
 from sklearn.svm import SVC
+from sklearn.preprocessing import StandardScaler
+
 
 try:
     from qiskit import QuantumCircuit
@@ -173,11 +175,7 @@ def main() -> None:
     def feature_map_state(x: np.ndarray) -> Statevector:
         qc = QuantumCircuit(n_qubits)
         for q in range(n_qubits):
-            qc.ry(float(x[q]), q)
-        for i in range(n_qubits - 1):
-            qc.cz(i, i + 1)
-        if n_qubits > 1:
-            qc.rz(float(x[0] * x[-1]), 0)
+            qc.ry(x[q], q)
         return Statevector.from_instruction(qc)
 
     def kernel(x1: np.ndarray, x2: np.ndarray) -> float:
@@ -193,6 +191,11 @@ def main() -> None:
             for j, sb in enumerate(states_b):
                 K[i, j] = float(np.abs(np.vdot(sb, sa)) ** 2)
         return K
+
+    scaler = StandardScaler()
+    X_train = scaler.fit_transform(X_train)
+    X_val = scaler.transform(X_val)
+    X_pred = scaler.transform(X_pred)
 
     K_train = kernel_matrix(X_train, X_train)
     K_val = kernel_matrix(X_val, X_train)
@@ -253,6 +256,8 @@ def main() -> None:
     with (out_dir / "metrics.json").open("w", encoding="utf-8") as f:
         json.dump(metrics, f, indent=2)
 
+    print("Kernel mean:", K_train.mean())
+    print("Kernel std:", K_train.std())
     print(f"Saved QKE artifacts to: {out_dir}")
     print(f"\n--- Metrics at operating threshold (t={operating_threshold}, insurance recall-priority) ---")
     print(json.dumps(metrics_operating, indent=2))
