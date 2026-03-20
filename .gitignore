@@ -2,3 +2,4 @@
 __pycache__
 .venv-qml/
 venv-qml/
+.venv/
