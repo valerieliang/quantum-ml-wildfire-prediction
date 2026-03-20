@@ -1,4 +1,4 @@
-"""train a PennyLane variational quantum classifier (VQC)."""
+"""train a Qiskit variational quantum classifier (VQC)."""
 
 from __future__ import annotations
 
@@ -19,11 +19,11 @@ from sklearn.metrics import (
 )
 
 try:
-    import pennylane as qml
-    from pennylane import numpy as pnp
+    from qiskit import QuantumCircuit
+    from qiskit.quantum_info import Statevector
 except ImportError as exc:  # pragma: no cover
     raise SystemExit(
-        "PennyLane is required for VQC. Install with `pip install pennylane`."
+        "Qiskit is required for VQC. Install with `pip install qiskit`."
     ) from exc
 
 
@@ -92,7 +92,23 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--learning-rate", type=float, default=0.05)
     parser.add_argument("--max-train-samples", type=int, default=1024)
+    parser.add_argument("--operating-threshold", type=float, default=OPERATING_THRESHOLD)
     return parser.parse_args()
+
+
+def _resolve_input_path(path_arg: str, repo_root: Path) -> Path:
+    p = Path(path_arg).expanduser()
+    if p.is_absolute() or p.exists():
+        return p
+    candidate = repo_root / p
+    return candidate if candidate.exists() else p
+
+
+def _resolve_output_path(path_arg: str, repo_root: Path) -> Path:
+    p = Path(path_arg).expanduser()
+    if p.is_absolute():
+        return p
+    return repo_root / p
 
 
 def resolve_feature_cols(df: pd.DataFrame, label_col: str, feature_cols_arg: str | None) -> list[str]:
@@ -107,14 +123,19 @@ def resolve_feature_cols(df: pd.DataFrame, label_col: str, feature_cols_arg: str
 
 def main() -> None:
     args = parse_args()
-    out_dir = Path(args.output_dir)
+    operating_threshold = float(args.operating_threshold)
+    repo_root = Path(__file__).resolve().parents[1]
+    train_path = _resolve_input_path(args.train, repo_root)
+    val_path = _resolve_input_path(args.val, repo_root)
+    predict_path = _resolve_input_path(args.predict_2023, repo_root)
+    out_dir = _resolve_output_path(args.output_dir, repo_root)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     rng = np.random.default_rng(args.seed)
 
-    train_df = pd.read_csv(args.train)
-    val_df = pd.read_csv(args.val)
-    pred_df = pd.read_csv(args.predict_2023)
+    train_df = pd.read_csv(train_path)
+    val_df = pd.read_csv(val_path)
+    pred_df = pd.read_csv(predict_path)
 
     if args.label_col not in train_df.columns or args.label_col not in val_df.columns:
         raise ValueError(f"Missing label column '{args.label_col}' in train/val.")
@@ -149,48 +170,65 @@ def main() -> None:
     if n_qubits == 0:
         raise ValueError("No feature columns found for VQC.")
 
-    dev = qml.device("default.qubit", wires=n_qubits)
-
-    @qml.qnode(dev, interface="autograd")
-    def circuit(x: pnp.ndarray, weights: pnp.ndarray) -> pnp.ndarray:
-        qml.AngleEmbedding(x, wires=range(n_qubits), rotation="Y")
-        qml.StronglyEntanglingLayers(weights, wires=range(n_qubits))
-        return qml.expval(qml.PauliZ(0))
+    def circuit_expectation(x: np.ndarray, weights: np.ndarray) -> float:
+        qc = QuantumCircuit(n_qubits)
+        for q in range(n_qubits):
+            qc.ry(float(x[q]), q)
+        for layer in range(args.n_layers):
+            for q in range(n_qubits):
+                qc.rx(float(weights[layer, q, 0]), q)
+                qc.ry(float(weights[layer, q, 1]), q)
+                qc.rz(float(weights[layer, q, 2]), q)
+            if n_qubits > 1:
+                for q in range(n_qubits - 1):
+                    qc.cx(q, q + 1)
+                qc.cx(n_qubits - 1, 0)
+        probs = Statevector.from_instruction(qc).probabilities()
+        z0 = np.array([1.0 if (idx & 1) == 0 else -1.0 for idx in range(len(probs))], dtype=float)
+        return float(np.dot(probs, z0))
 
     pos = float(y_train.sum())
     neg = float(len(y_train) - pos)
     pos_weight = neg / pos if pos > 0 else 1.0
 
-    def predict_scores(X: np.ndarray, weights: pnp.ndarray) -> np.ndarray:
-        vals = [circuit(x, weights) for x in X]
+    def predict_scores(X: np.ndarray, weights: np.ndarray) -> np.ndarray:
+        vals = [circuit_expectation(x, weights) for x in X]
         vals = np.asarray(vals, dtype=float)
-        return (vals + 1.0) / 2.0
+        return np.clip((vals + 1.0) / 2.0, 1e-8, 1 - 1e-8)
 
-    def weighted_bce(probs: pnp.ndarray, y_true: pnp.ndarray) -> pnp.ndarray:
+    def weighted_bce(probs: np.ndarray, y_true: np.ndarray) -> float:
         eps = 1e-8
-        w = pnp.where(y_true > 0.5, pos_weight, 1.0)
-        return -pnp.mean(w * (y_true * pnp.log(probs + eps) + (1 - y_true) * pnp.log(1 - probs + eps)))
+        w = np.where(y_true > 0.5, pos_weight, 1.0)
+        return float(-np.mean(w * (y_true * np.log(probs + eps) + (1 - y_true) * np.log(1 - probs + eps))))
 
-    def loss(weights: pnp.ndarray, Xb: pnp.ndarray, yb: pnp.ndarray) -> pnp.ndarray:
-        logits = pnp.stack([circuit(x, weights) for x in Xb])
-        probs = (logits + 1.0) / 2.0
+    def loss(weights: np.ndarray, Xb: np.ndarray, yb: np.ndarray) -> float:
+        logits = np.array([circuit_expectation(x, weights) for x in Xb], dtype=float)
+        probs = np.clip((logits + 1.0) / 2.0, 1e-8, 1 - 1e-8)
         return weighted_bce(probs, yb)
 
-    weights = pnp.array(0.01 * rng.normal(size=(args.n_layers, n_qubits, 3)), requires_grad=True)
-    opt = qml.AdamOptimizer(stepsize=args.learning_rate)
+    weights = 0.01 * rng.normal(size=(args.n_layers, n_qubits, 3))
 
     history: list[dict[str, float | int]] = []
     for epoch in range(1, args.epochs + 1):
         batch_idx = rng.choice(len(X_train), size=min(args.batch_size, len(X_train)), replace=False)
-        Xb = pnp.array(X_train[batch_idx], requires_grad=False)
-        yb = pnp.array(y_train[batch_idx], requires_grad=False)
-        weights, batch_loss = opt.step_and_cost(lambda w: loss(w, Xb, yb), weights)
+        Xb = X_train[batch_idx]
+        yb = y_train[batch_idx]
+
+        # Lightweight SPSA update to avoid autograd dependencies.
+        delta = rng.choice([-1.0, 1.0], size=weights.shape)
+        ck = 0.1 / (epoch ** 0.101)
+        ak = args.learning_rate / np.sqrt(epoch)
+        loss_plus = loss(weights + ck * delta, Xb, yb)
+        loss_minus = loss(weights - ck * delta, Xb, yb)
+        grad_est = ((loss_plus - loss_minus) / (2.0 * ck)) * delta
+        weights = weights - ak * grad_est
+        batch_loss = 0.5 * (loss_plus + loss_minus)
 
         if epoch == 1 or epoch % 5 == 0 or epoch == args.epochs:
             val_prob_epoch = predict_scores(X_val, weights)
             # Monitor at the insurance operating threshold (recall-priority, t=0.3)
             # rather than max-F1, so the training history reflects the actual objective.
-            ins_metrics = compute_metrics_at_threshold(y_val, val_prob_epoch, OPERATING_THRESHOLD)
+            ins_metrics = compute_metrics_at_threshold(y_val, val_prob_epoch, operating_threshold)
             history.append(
                 {
                     "epoch": epoch,
@@ -198,11 +236,14 @@ def main() -> None:
                     "val_f1": float(ins_metrics["f1"]),
                     "val_precision": float(ins_metrics["precision"]),
                     "val_recall": float(ins_metrics["recall"]),
-                    "threshold": OPERATING_THRESHOLD,
+                    "threshold": operating_threshold,
                 }
             )
 
-    val_prob = predict_scores(X_val, weights)
+    val_prob_raw = predict_scores(X_val, weights)
+    auc_before_flip = float(roc_auc_score(y_val, val_prob_raw))
+    orientation_flipped = auc_before_flip < 0.5
+    val_prob = 1.0 - val_prob_raw if orientation_flipped else val_prob_raw
     sweep_df, best_f1_thr, best_prec_rec50_thr = threshold_sweep(y_val, val_prob)
     sweep_df.to_csv(out_dir / "threshold_sweep.csv", index=False)
 
@@ -210,26 +251,27 @@ def main() -> None:
     # Max-F1 (~0.8) sacrifices ~40% recall — missing fire zip codes that become
     # underpriced policies. t=0.3 is the recommended operating point from the
     # classical baseline evaluation (93% recall, 52% false alarm rate for LR).
-    metrics_operating = compute_metrics_at_threshold(y_val, val_prob, OPERATING_THRESHOLD)
+    metrics_operating = compute_metrics_at_threshold(y_val, val_prob, operating_threshold)
     # Also compute max-F1 metrics for the full sweep comparison / Task 1B writeup.
     metrics_best_f1 = compute_metrics_at_threshold(y_val, val_prob, best_f1_thr)
 
     val_out = val_df[["zip", "year", args.label_col]].copy()
     val_out["wildfire_prob"] = val_prob
-    val_out["wildfire_pred"] = (val_prob >= OPERATING_THRESHOLD).astype(int)
+    val_out["wildfire_pred"] = (val_prob >= operating_threshold).astype(int)
     val_out.to_csv(out_dir / "val_predictions.csv", index=False)
 
-    pred_prob = predict_scores(X_pred, weights)
+    pred_prob_raw = predict_scores(X_pred, weights)
+    pred_prob = 1.0 - pred_prob_raw if orientation_flipped else pred_prob_raw
     pred_out = pred_df[["zip", "year"]].copy()
     pred_out["wildfire_prob"] = pred_prob
-    pred_out["wildfire_pred"] = (pred_prob >= OPERATING_THRESHOLD).astype(int)
+    pred_out["wildfire_pred"] = (pred_prob >= operating_threshold).astype(int)
     pred_out.to_csv(out_dir / "predict_2023_predictions.csv", index=False)
 
     np.savez(out_dir / "model_params.npz", weights=np.asarray(weights))
     pd.DataFrame(history).to_csv(out_dir / "training_history.csv", index=False)
 
     metrics = {
-        "model": "PennyLaneVQC",
+        "model": "QiskitVQC",
         "feature_cols": feature_cols,
         "n_qubits": n_qubits,
         "n_layers": args.n_layers,
@@ -247,11 +289,15 @@ def main() -> None:
             # t=0.3 is the insurance operating threshold: maximise recall (catching fire
             # zip codes) while keeping false alarm rate at an acceptable level.
             # Matches the classical baseline recommended threshold from 3_classical_baseline.md.
-            "operating_threshold": OPERATING_THRESHOLD,
+            "operating_threshold": operating_threshold,
             "selected_for_predictions": "insurance_recall_priority",
             "best_f1_threshold": float(best_f1_thr),
             "best_precision_with_recall_ge_0_5_threshold": float(best_prec_rec50_thr),
             "recall_constraint_feasible": bool((sweep_df["recall"] >= 0.5).any()),
+        },
+        "score_orientation": {
+            "auc_before_orientation_check": auc_before_flip,
+            "orientation_flipped": orientation_flipped,
         },
         "metrics_val_operating_threshold": metrics_operating,
         "metrics_val_best_f1": metrics_best_f1,
@@ -261,7 +307,7 @@ def main() -> None:
         json.dump(metrics, f, indent=2)
 
     print(f"Saved VQC artifacts to: {out_dir}")
-    print(f"\n--- Metrics at operating threshold (t={OPERATING_THRESHOLD}, insurance recall-priority) ---")
+    print(f"\n--- Metrics at operating threshold (t={operating_threshold}, insurance recall-priority) ---")
     print(json.dumps(metrics_operating, indent=2))
     print(f"\n--- Metrics at best-F1 threshold (t={best_f1_thr:.2f}, for Task 1B comparison) ---")
     print(json.dumps(metrics_best_f1, indent=2))

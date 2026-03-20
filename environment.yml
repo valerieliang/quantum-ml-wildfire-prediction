@@ -3,10 +3,11 @@ channels:
   - defaults
   - conda-forge
 dependencies:
-  - python=3.14
+  - python=3.12
   - pandas
-  - numpy
+  - numpy<2
   - matplotlib
   - scipy
   - scikit-learn
   - xgboost
+  - qiskit

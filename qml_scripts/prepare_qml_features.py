@@ -34,6 +34,21 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _resolve_input_path(path_arg: str, repo_root: Path) -> Path:
+    p = Path(path_arg).expanduser()
+    if p.is_absolute() or p.exists():
+        return p
+    candidate = repo_root / p
+    return candidate if candidate.exists() else p
+
+
+def _resolve_output_path(path_arg: str, repo_root: Path) -> Path:
+    p = Path(path_arg).expanduser()
+    if p.is_absolute():
+        return p
+    return repo_root / p
+
+
 def _feature_cols(df: pd.DataFrame, label_col: str) -> list[str]:
     return [c for c in df.columns if c not in set(ID_COLS + [label_col])]
 
@@ -58,12 +73,17 @@ def _save_qml_csv(
 
 def main() -> None:
     args = parse_args()
-    out_dir = Path(args.output_dir)
+    repo_root = Path(__file__).resolve().parents[1]
+    train_path = _resolve_input_path(args.train, repo_root)
+    val_path = _resolve_input_path(args.val, repo_root)
+    predict_path = _resolve_input_path(args.predict_2023, repo_root)
+    importance_path = _resolve_input_path(args.importance_csv, repo_root)
+    out_dir = _resolve_output_path(args.output_dir, repo_root)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    train_df = pd.read_csv(args.train)
-    val_df = pd.read_csv(args.val)
-    pred_df = pd.read_csv(args.predict_2023)
+    train_df = pd.read_csv(train_path)
+    val_df = pd.read_csv(val_path)
+    pred_df = pd.read_csv(predict_path)
 
     _check_columns(train_df, ID_COLS + [args.label_col], "train")
     _check_columns(val_df, ID_COLS + [args.label_col], "val")
@@ -76,7 +96,7 @@ def main() -> None:
     method_details: dict[str, object] = {}
 
     if args.mode == "importance":
-        imp_df = pd.read_csv(args.importance_csv)
+        imp_df = pd.read_csv(importance_path)
         if "feature" not in imp_df.columns:
             raise ValueError("importance CSV must contain 'feature' column")
         ranked = [f for f in imp_df["feature"].tolist() if f in base_features]
@@ -89,7 +109,7 @@ def main() -> None:
         pred_out = pred_df.copy()
         selected_features = selected
         method_details = {
-            "importance_csv": args.importance_csv,
+            "importance_csv": str(importance_path),
             "available_ranked_features": ranked,
         }
 
@@ -143,9 +163,9 @@ def main() -> None:
         "n_qubits": args.n_qubits,
         "label_col": args.label_col,
         "input_paths": {
-            "train": args.train,
-            "val": args.val,
-            "predict_2023": args.predict_2023,
+            "train": str(train_path),
+            "val": str(val_path),
+            "predict_2023": str(predict_path),
         },
         "output_paths": {
             "qml_train": str(out_dir / "qml_train.csv"),

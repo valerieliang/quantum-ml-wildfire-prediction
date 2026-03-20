@@ -1,0 +1,53 @@
+{
+  "model": "QiskitQKE+SVC",
+  "feature_cols": [
+    "PC1",
+    "PC2",
+    "PC3",
+    "PC4",
+    "PC5"
+  ],
+  "n_qubits": 5,
+  "kernel": "AngleEmbedding+CZ+cross-term",
+  "seed": 42,
+  "svm_c": 1.0,
+  "n_train_used": 128,
+  "n_train_full": 10372,
+  "n_val": 2593,
+  "n_predict_2023": 2593,
+  "threshold_selection": {
+    "operating_threshold": 0.1,
+    "selected_for_predictions": "insurance_recall_priority",
+    "best_f1_threshold": 0.1,
+    "best_precision_with_recall_ge_0_5_threshold": 0.1,
+    "recall_constraint_feasible": true
+  },
+  "metrics_val_operating_threshold": {
+    "roc_auc": 0.6717686604963853,
+    "pr_auc": 0.10394757972491035,
+    "accuracy": 0.630158118010027,
+    "precision": 0.11851126346718903,
+    "recall": 0.6722222222222223,
+    "f1": 0.20149875104079934,
+    "threshold": 0.1,
+    "tp": 121,
+    "tn": 1513,
+    "fp": 900,
+    "fn": 59,
+    "n_predicted_positive": 1021
+  },
+  "metrics_val_best_f1": {
+    "roc_auc": 0.6717686604963853,
+    "pr_auc": 0.10394757972491035,
+    "accuracy": 0.630158118010027,
+    "precision": 0.11851126346718903,
+    "recall": 0.6722222222222223,
+    "f1": 0.20149875104079934,
+    "threshold": 0.1,
+    "tp": 121,
+    "tn": 1513,
+    "fp": 900,
+    "fn": 59,
+    "n_predicted_positive": 1021
+  }
+}

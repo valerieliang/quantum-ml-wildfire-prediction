@@ -1,5 +1,5 @@
 {
-  "model": "PennyLaneVQC",
+  "model": "QiskitVQC",
   "feature_cols": [
     "PC1",
     "PC2",
@@ -22,36 +22,40 @@
   "threshold_selection": {
     "operating_threshold": 0.3,
     "selected_for_predictions": "insurance_recall_priority",
-    "best_f1_threshold": 0.01,
-    "best_precision_with_recall_ge_0_5_threshold": 0.49,
+    "best_f1_threshold": 0.62,
+    "best_precision_with_recall_ge_0_5_threshold": 0.51,
     "recall_constraint_feasible": true
   },
+  "score_orientation": {
+    "auc_before_orientation_check": 0.3065973661187088,
+    "orientation_flipped": true
+  },
   "metrics_val_operating_threshold": {
-    "roc_auc": 0.44862089607220146,
-    "pr_auc": 0.07509227625902093,
-    "accuracy": 0.06941766293868107,
-    "precision": 0.06941766293868107,
-    "recall": 1.0,
-    "f1": 0.1298232960692391,
+    "roc_auc": 0.6934026338812912,
+    "pr_auc": 0.173085112596002,
+    "accuracy": 0.4600848438102584,
+    "precision": 0.09224598930481283,
+    "recall": 0.7666666666666667,
+    "f1": 0.16467780429594273,
     "threshold": 0.3,
-    "tp": 180,
-    "tn": 0,
-    "fp": 2413,
-    "fn": 0,
-    "n_predicted_positive": 2593
+    "tp": 138,
+    "tn": 1055,
+    "fp": 1358,
+    "fn": 42,
+    "n_predicted_positive": 1496
   },
   "metrics_val_best_f1": {
-    "roc_auc": 0.44862089607220146,
-    "pr_auc": 0.07509227625902093,
-    "accuracy": 0.06941766293868107,
-    "precision": 0.06941766293868107,
-    "recall": 1.0,
-    "f1": 0.1298232960692391,
-    "threshold": 0.01,
-    "tp": 180,
-    "tn": 0,
-    "fp": 2413,
-    "fn": 0,
-    "n_predicted_positive": 2593
+    "roc_auc": 0.6934026338812912,
+    "pr_auc": 0.173085112596002,
+    "accuracy": 0.8596220593906672,
+    "precision": 0.21428571428571427,
+    "recall": 0.38333333333333336,
+    "f1": 0.2749003984063745,
+    "threshold": 0.62,
+    "tp": 69,
+    "tn": 2160,
+    "fp": 253,
+    "fn": 111,
+    "n_predicted_positive": 322
   }
 }

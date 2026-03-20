@@ -8,9 +8,9 @@
     "predict_2023": "pca/pca_predict_2023.csv"
   },
   "output_paths": {
-    "qml_train": "qml/qml_train.csv",
-    "qml_val": "qml/qml_val.csv",
-    "qml_predict_2023": "qml/qml_predict_2023.csv"
+    "qml_train": "/Users/mariamhusain/Desktop/quantum-ml-wildfire-prediction/qml/qml_train.csv",
+    "qml_val": "/Users/mariamhusain/Desktop/quantum-ml-wildfire-prediction/qml/qml_val.csv",
+    "qml_predict_2023": "/Users/mariamhusain/Desktop/quantum-ml-wildfire-prediction/qml/qml_predict_2023.csv"
   },
   "selected_features": [
     "PC1",
