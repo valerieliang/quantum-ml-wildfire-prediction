@@ -8,7 +8,15 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from baseline_utils import compute_metrics_at_threshold, threshold_sweep
+from sklearn.metrics import (
+    accuracy_score,
+    average_precision_score,
+    confusion_matrix,
+    f1_score,
+    precision_score,
+    recall_score,
+    roc_auc_score,
+)
 
 try:
     import pennylane as qml
@@ -24,6 +32,50 @@ except ImportError as exc:  # pragma: no cover
 # at t=0.3, LR catches 93% of fire zip codes while flagging 52% of non-fire zips.
 # Max-F1 (~0.8) sacrifices 40% recall, which an insurer cannot accept.
 OPERATING_THRESHOLD = 0.3
+
+
+def compute_metrics_at_threshold(
+    y_true: np.ndarray, y_prob: np.ndarray, threshold: float
+) -> dict[str, float | int]:
+    y_pred = (y_prob >= threshold).astype(int)
+    tn, fp, fn, tp = confusion_matrix(y_true, y_pred, labels=[0, 1]).ravel()
+    return {
+        "roc_auc": float(roc_auc_score(y_true, y_prob)),
+        "pr_auc": float(average_precision_score(y_true, y_prob)),
+        "accuracy": float(accuracy_score(y_true, y_pred)),
+        "precision": float(precision_score(y_true, y_pred, zero_division=0)),
+        "recall": float(recall_score(y_true, y_pred, zero_division=0)),
+        "f1": float(f1_score(y_true, y_pred, zero_division=0)),
+        "threshold": float(threshold),
+        "tp": int(tp),
+        "tn": int(tn),
+        "fp": int(fp),
+        "fn": int(fn),
+        "n_predicted_positive": int(y_pred.sum()),
+    }
+
+
+def threshold_sweep(
+    y_true: np.ndarray, y_prob: np.ndarray
+) -> tuple[pd.DataFrame, float, float]:
+    rows = []
+    for thr in np.round(np.arange(0.01, 1.00, 0.01), 2):
+        rows.append(compute_metrics_at_threshold(y_true, y_prob, float(thr)))
+
+    sweep_df = pd.DataFrame(rows).sort_values("threshold").reset_index(drop=True)
+    best_f1_row = sweep_df.sort_values(
+        ["f1", "recall", "precision"], ascending=False
+    ).iloc[0]
+    best_f1_threshold = float(best_f1_row["threshold"])
+
+    feasible = sweep_df[sweep_df["recall"] >= 0.5]
+    if len(feasible):
+        best_prec_row = feasible.sort_values(["precision", "f1"], ascending=False).iloc[0]
+        best_precision_recall50_threshold = float(best_prec_row["threshold"])
+    else:
+        best_precision_recall50_threshold = best_f1_threshold
+
+    return sweep_df, best_f1_threshold, best_precision_recall50_threshold
 
 
 def parse_args() -> argparse.Namespace:

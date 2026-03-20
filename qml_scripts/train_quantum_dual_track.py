@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import subprocess
 import sys
+from pathlib import Path
 
 
 def parse_args() -> argparse.Namespace:
@@ -26,6 +27,7 @@ def run(cmd: list[str]) -> None:
 
 def main() -> None:
     args = parse_args()
+    script_dir = Path(__file__).resolve().parent
 
     base_args = [
         "--train",
@@ -45,7 +47,7 @@ def main() -> None:
 
     vqc_cmd = [
         sys.executable,
-        "train_quantum_vqc.py",
+        str(script_dir / "train_quantum_vqc.py"),
         *base_args,
         "--output-dir",
         f"{args.base_output_dir}/vqc",
@@ -53,7 +55,7 @@ def main() -> None:
 
     qke_cmd = [
         sys.executable,
-        "train_quantum_qke.py",
+        str(script_dir / "train_quantum_qke.py"),
         *base_args,
         "--output-dir",
         f"{args.base_output_dir}/qke",
