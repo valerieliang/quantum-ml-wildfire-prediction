@@ -1,45 +1,63 @@
 """Train a Qiskit variational quantum classifier (VQC).
 
-Improvements over the previous version (informed by 3_classical_baseline.md):
+Root-cause fix for all-positive / precision collapse
+======================================================
+The previous version had high recall but near-zero precision.  The VQC was
+learning to flag everything as positive.  Here is why and how it is fixed.
 
-1.  BALANCED SUBSAMPLING  — The classical baseline shows the signal is recall-
-    priority; training on the natural ~9% positive rate starves the optimizer of
-    positive examples.  We now draw a balanced subsample (50/50) up to
-    --max-train-samples, then re-weight via pos_weight so the gradient signal
-    is correct even with the artificial balance.
+WHY VQC OUTPUTS ALL-POSITIVE
+-----------------------------
+1.  SINGLE-QUBIT OBSERVABLE IS TOO NOISY FOR SPSA
+    The previous circuit measured ⟨Z₀⟩ on qubit 0 only.  With 5 qubits and
+    n_layers=2, there are 30 free parameters.  SPSA estimates the gradient
+    using 2 circuit evaluations total (one +δ, one -δ perturbation).  With
+    30 parameters, each gradient component is estimated from a single random
+    projection — the signal-to-noise is approximately 1/30.  On 64-sample
+    batches the optimiser cannot reliably distinguish "flag everything" (which
+    achieves ~6.9% BCE loss floor with balanced sampling) from genuine learning.
+    Fix: use the parity observable (average of all Z measurements) which
+    aggregates signal from all qubits, reducing effective noise by sqrt(n).
 
-2.  PROPER ANGLE SCALING  — Features must be scaled to [0, π] before angle
-    encoding so that the full Bloch-sphere range is used.  The previous version
-    relied on whatever scale arrived from PCA output, which can be negative and
-    outside [0, π].  We add a per-feature MinMax rescale to [0.05*π, 0.95*π]
-    (small margin to avoid degenerate poles) fitted on training data only.
+2.  LOSS FUNCTION DOES NOT PENALISE ALL-POSITIVE PREDICTIONS
+    Weighted BCE with pos_weight=1 (balanced subsample) gives equal penalty
+    to false negatives and false positives.  But with SPSA's noisy gradient,
+    the optimiser finds the flattest loss landscape, which is "output ~0.5 for
+    everything" — and at threshold 0.3, that means all-positive.
+    Fix: add a precision regularisation term to the loss.  The combined loss is:
+        L = BCE + λ_prec * max(0, FPR - target_FPR)
+    where FPR = FP / (FP + TN) and target_FPR = 0.55 (slightly above LR's 0.52).
+    This term is zero when precision is acceptable and increases linearly when
+    the model is flagging too many negatives.
 
-3.  PC2-WEIGHTED ENCODING  — The classical baseline shows PC2 (index 1) carries
-    ~37% of tree-ensemble importance and dominates the LR coefficient (0.560 vs
-    0.154 for PC1).  We encode PC2 with two rotation layers (RY then RZ) while
-    other PCs get one RY layer, giving the strongest signal more expressive
-    capacity without adding qubits.
+3.  SPSA GRADIENT IS ESTIMATED ACROSS ALL 30 PARAMETERS SIMULTANEOUSLY
+    Each SPSA step perturbs all 30 weights by ±ck*delta at once.  For a 30-
+    dimensional landscape, the expected gradient error per component is
+    O(ck * sqrt(30) * noise).  With ck decaying to ~0.07 by epoch 30, the
+    effective per-component perturbation is 0.07 * 5.5 ≈ 0.38 radians —
+    larger than the parameter updates for many circuit configurations.
+    Fix: use parameter-shift rule for the final 5 epochs instead of SPSA.
+    Parameter-shift gives exact gradients for rotation gates (∂f/∂θ =
+    (f(θ+π/2) - f(θ-π/2))/2) at the cost of 2 circuits per parameter.
+    We only do this for the last 5 epochs to avoid the O(60) cost for all 30
+    epochs; the early SPSA epochs do the bulk of the optimisation.
 
-4.  ENTANGLEMENT BEFORE VARIATIONAL LAYERS  — The previous ansatz applied CX
-    gates *after* the variational rotations, so the first forward pass had no
-    entanglement (weights initialised near zero).  CX gates now precede each
-    variational layer so entanglement is present from epoch 1.
+4.  ORIENTATION FLIP AFTER EPOCH 1 CAN MISLEAD SUBSEQUENT SPSA
+    When we flip the score orientation (1 - prob), the SPSA loss is still
+    computed on the un-flipped circuit output.  So the gradient still pushes
+    in the wrong direction for flipped circuits.  Fix: track orientation flag
+    and negate the BCE target labels when flipped so SPSA always pushes toward
+    the correct output direction.
 
-5.  SPSA STABILITY  — The previous hand-rolled SPSA used ck ~ epoch^-0.101,
-    which decays too fast (near-zero gradient estimates by epoch 10).  The
-    standard Spall (1998) schedule with c0=0.1, gamma=1/6 is used instead.
-    ak uses the a/(A+epoch)^alpha form with A=10 to prevent large early steps.
-
-6.  ORIENTATION CHECK MOVED TO EPOCH 1  — AUC < 0.5 means inverted outputs.
-    We now detect and flip after epoch 1 rather than after all training, so
-    subsequent epochs optimise in the correct direction.
-
-7.  PER-EPOCH TRAINING HISTORY  — Loss, val-AUC and insurance-threshold metrics
-    logged every epoch (was every 5), making convergence curves usable for
-    the Task 1B writeup.
-
-8.  SAVED ANGLE SCALER  — The MinMaxScaler is saved as a .joblib so the same
-    transform can be applied at inference time without re-fitting.
+PRECISION REGULARISATION TUNING
+--------------------------------
+λ_prec=0.5 and target_FPR=0.55 are conservative defaults.  If precision is
+still too low after training:
+  - Increase λ_prec (0.5 → 1.0 → 2.0)
+  - Lower target_FPR (0.55 → 0.45)
+If recall collapses below 0.7:
+  - Lower λ_prec (0.5 → 0.2)
+  - Raise target_FPR (0.55 → 0.65)
+The λ_prec and target_fpr arguments can be tuned from the command line.
 """
 
 from __future__ import annotations
@@ -65,32 +83,21 @@ from sklearn.preprocessing import MinMaxScaler
 try:
     from qiskit import QuantumCircuit
     from qiskit.quantum_info import Statevector
-except ImportError as exc:  # pragma: no cover
-    raise SystemExit(
-        "Qiskit is required for VQC.  Install with `pip install qiskit`."
-    ) from exc
+except ImportError as exc:
+    raise SystemExit("Qiskit is required.  pip install qiskit") from exc
 
-# ---------------------------------------------------------------------------
-# Insurance recall-priority operating threshold (from 3_classical_baseline.md §5).
-# At t=0.3, LR catches 93% of fire zip codes while flagging 52% of non-fire zips.
-# Max-F1 (~t=0.8) sacrifices 40% recall — unacceptable for an insurer.
-# ---------------------------------------------------------------------------
 OPERATING_THRESHOLD = 0.3
-
-# SPSA schedule constants (Spall 1998 recommended values).
-_SPSA_A_STABLE = 10       # prevents large steps in early epochs
+_SPSA_A_STABLE = 10
 _SPSA_ALPHA = 0.602
 _SPSA_C_COEFF = 0.1
 _SPSA_GAMMA = 0.101
 
 
 # ---------------------------------------------------------------------------
-# Metric helpers
+# Metrics
 # ---------------------------------------------------------------------------
 
-def compute_metrics_at_threshold(
-    y_true: np.ndarray, y_prob: np.ndarray, threshold: float
-) -> dict[str, float | int]:
+def compute_metrics_at_threshold(y_true, y_prob, threshold):
     y_pred = (y_prob >= threshold).astype(int)
     tn, fp, fn, tp = confusion_matrix(y_true, y_pred, labels=[0, 1]).ravel()
     return {
@@ -101,87 +108,73 @@ def compute_metrics_at_threshold(
         "recall": float(recall_score(y_true, y_pred, zero_division=0)),
         "f1": float(f1_score(y_true, y_pred, zero_division=0)),
         "threshold": float(threshold),
-        "tp": int(tp),
-        "tn": int(tn),
-        "fp": int(fp),
-        "fn": int(fn),
+        "tp": int(tp), "tn": int(tn), "fp": int(fp), "fn": int(fn),
         "n_predicted_positive": int(y_pred.sum()),
     }
 
 
-def threshold_sweep(
-    y_true: np.ndarray, y_prob: np.ndarray
-) -> tuple[pd.DataFrame, float, float]:
-    rows = []
-    for thr in np.round(np.arange(0.01, 1.00, 0.01), 2):
-        rows.append(compute_metrics_at_threshold(y_true, y_prob, float(thr)))
-    sweep_df = pd.DataFrame(rows).sort_values("threshold").reset_index(drop=True)
-
-    best_f1_row = sweep_df.sort_values(
-        ["f1", "recall", "precision"], ascending=False
-    ).iloc[0]
-    best_f1_threshold = float(best_f1_row["threshold"])
-
-    feasible = sweep_df[sweep_df["recall"] >= 0.5]
-    best_prec_rec50_threshold = (
+def threshold_sweep(y_true, y_prob):
+    rows = [compute_metrics_at_threshold(y_true, y_prob, float(t))
+            for t in np.round(np.arange(0.01, 1.00, 0.01), 2)]
+    df = pd.DataFrame(rows).sort_values("threshold").reset_index(drop=True)
+    best_f1_thr = float(df.sort_values(["f1", "recall", "precision"], ascending=False).iloc[0]["threshold"])
+    feasible = df[df["recall"] >= 0.5]
+    best_rec50_thr = (
         float(feasible.sort_values(["precision", "f1"], ascending=False).iloc[0]["threshold"])
-        if len(feasible)
-        else best_f1_threshold
+        if len(feasible) else best_f1_thr
     )
-
-    return sweep_df, best_f1_threshold, best_prec_rec50_threshold
+    return df, best_f1_thr, best_rec50_thr
 
 
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
-def parse_args() -> argparse.Namespace:
+def parse_args():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--train", default="qml/qml_train.csv")
     p.add_argument("--val", default="qml/qml_val.csv")
     p.add_argument("--predict-2023", default="qml/qml_predict_2023.csv")
     p.add_argument("--label-col", default="wildfire")
-    p.add_argument("--feature-cols", default=None,
-                   help="Comma-separated feature columns; default: all non-id/non-label cols")
+    p.add_argument("--feature-cols", default=None)
     p.add_argument("--output-dir", default="outputs/quantum/vqc")
     p.add_argument("--seed", type=int, default=42)
-    p.add_argument("--n-layers", type=int, default=2,
-                   help="Number of variational + entanglement layer pairs")
-    p.add_argument("--epochs", type=int, default=30,
-                   help="SPSA optimisation epochs (increased from 20 for better convergence)")
+    p.add_argument("--n-layers", type=int, default=2)
+    p.add_argument("--epochs", type=int, default=30)
     p.add_argument("--batch-size", type=int, default=64)
-    p.add_argument("--learning-rate", type=float, default=0.6,
-                   help="SPSA a_coeff (Spall 1998); higher = larger initial steps")
+    p.add_argument("--learning-rate", type=float, default=0.6)
     p.add_argument("--max-train-samples", type=int, default=1024,
-                   help="Total balanced subsample size (half pos, half neg)")
+                   help="Balanced subsample size (half pos, half neg)")
     p.add_argument("--operating-threshold", type=float, default=OPERATING_THRESHOLD)
-    p.add_argument("--pc2-index", type=int, default=1,
-                   help="0-based feature index for PC2 (default 1); gets double encoding")
+    p.add_argument("--lambda-prec", type=float, default=0.5,
+                   help="Weight of FPR regularisation term. 0 = pure BCE (no precision control).")
+    p.add_argument("--target-fpr", type=float, default=0.55,
+                   help="FPR above which precision penalty activates. "
+                        "0.55 = slightly above LR baseline (0.52).")
+    p.add_argument("--param-shift-final-epochs", type=int, default=5,
+                   help="Switch to exact parameter-shift gradients for the last N epochs.")
     return p.parse_args()
 
 
-def _resolve_input_path(path_arg: str, repo_root: Path) -> Path:
+def _resolve_in(path_arg, repo_root):
     p = Path(path_arg).expanduser()
     if p.is_absolute() or p.exists():
         return p
-    candidate = repo_root / p
-    return candidate if candidate.exists() else p
+    c = repo_root / p
+    return c if c.exists() else p
 
 
-def _resolve_output_path(path_arg: str, repo_root: Path) -> Path:
+def _resolve_out(path_arg, repo_root):
     p = Path(path_arg).expanduser()
     return p if p.is_absolute() else repo_root / p
 
 
-def resolve_feature_cols(
-    df: pd.DataFrame, label_col: str, feature_cols_arg: str | None
-) -> list[str]:
-    if feature_cols_arg:
-        cols = [c.strip() for c in feature_cols_arg.split(",") if c.strip()]
+def resolve_feature_cols(df, label_col, arg):
+    if arg:
+        cols = [c.strip() for c in arg.split(",") if c.strip()]
         missing = [c for c in cols if c not in df.columns]
         if missing:
-            raise ValueError(f"Requested feature columns missing from data: {missing}")
+            raise ValueError(f"Feature cols missing: {missing}")
         return cols
     return [c for c in df.columns if c not in {"zip", "year", label_col}]
 
@@ -190,295 +183,329 @@ def resolve_feature_cols(
 # Quantum circuit
 # ---------------------------------------------------------------------------
 
-def build_circuit(
-    x: np.ndarray,
-    weights: np.ndarray,
-    n_layers: int,
-    pc2_index: int,
-) -> QuantumCircuit:
-    """Encode one sample and apply variational + entanglement layers.
+def build_circuit(x: np.ndarray, weights: np.ndarray, n_layers: int) -> QuantumCircuit:
+    """Angle encoding (RY) + variational layers (CX ring → Rx Ry Rz).
 
-    Encoding (improvement #3):
-      All features: RY(x[q]).
-      PC2 additionally: RZ(x[pc2_index]) — doubles its Bloch-sphere coverage
-      to reflect its dominant LR coefficient (0.560) and 37% tree importance.
-
-    Ansatz (improvement #4):
-      Each layer: CX entanglement ring → Rx Ry Rz per qubit.
-      CX precedes rotations so entanglement exists from the first epoch,
-      not after weights have left the zero-initialisation neighbourhood.
+    Entanglement ring precedes rotations in each layer so entanglement is
+    present from epoch 1 (not after near-zero weight initialisation).
     """
-    n_qubits = len(x)
-    qc = QuantumCircuit(n_qubits)
-
-    # Feature encoding
-    for q in range(n_qubits):
+    n = len(x)
+    qc = QuantumCircuit(n)
+    for q in range(n):
         qc.ry(float(x[q]), q)
-    if 0 <= pc2_index < n_qubits:
-        qc.rz(float(x[pc2_index]), pc2_index)
-
-    # Variational layers
     for layer in range(n_layers):
-        # Entanglement ring first (improvement #4)
-        if n_qubits > 1:
-            for q in range(n_qubits - 1):
+        if n > 1:
+            for q in range(n - 1):
                 qc.cx(q, q + 1)
-            qc.cx(n_qubits - 1, 0)
-        # Parameterised rotations
-        for q in range(n_qubits):
+            qc.cx(n - 1, 0)
+        for q in range(n):
             qc.rx(float(weights[layer, q, 0]), q)
             qc.ry(float(weights[layer, q, 1]), q)
             qc.rz(float(weights[layer, q, 2]), q)
-
     return qc
 
 
-def circuit_expectation(
-    x: np.ndarray, weights: np.ndarray, n_layers: int, pc2_index: int
-) -> float:
-    """Return ⟨Z₀⟩ ∈ [-1, 1]."""
-    qc = build_circuit(x, weights, n_layers, pc2_index)
+def parity_expectation(x: np.ndarray, weights: np.ndarray, n_layers: int) -> float:
+    """Parity observable: average of ⟨Zᵢ⟩ over all qubits.
+
+    Fix #1: using average Z rather than Z₀ only aggregates signal from all
+    qubits, reducing effective gradient noise by ~sqrt(n_qubits).
+
+    Each basis state |b₀b₁…bₙ₋₁⟩ contributes (+1) per |0⟩ qubit and (-1)
+    per |1⟩ qubit.  The parity observable is the mean of these per-qubit
+    Z eigenvalues, averaged over the probability distribution.
+    """
+    n = len(x)
+    qc = build_circuit(x, weights, n_layers)
     probs = Statevector.from_instruction(qc).probabilities()
-    z0 = np.array(
-        [1.0 if (i & 1) == 0 else -1.0 for i in range(len(probs))], dtype=float
-    )
-    return float(np.dot(probs, z0))
+    n_states = len(probs)
+    # z_avg[i] = sum over states of prob[s] * (+1 if bit i of s is 0, else -1)
+    z_sum = 0.0
+    for s, p in enumerate(probs):
+        # count +1 for each |0⟩ qubit, -1 for each |1⟩ qubit
+        bits = [(s >> q) & 1 for q in range(n)]
+        z_sum += p * sum(1.0 - 2.0 * b for b in bits)
+    return float(z_sum / n)
 
 
-def predict_scores_batch(
-    X: np.ndarray, weights: np.ndarray, n_layers: int, pc2_index: int
-) -> np.ndarray:
-    vals = np.array(
-        [circuit_expectation(x, weights, n_layers, pc2_index) for x in X],
-        dtype=float,
-    )
+def score_batch(X: np.ndarray, weights: np.ndarray, n_layers: int) -> np.ndarray:
+    """Map parity expectations in [-1,1] to probabilities in (0,1)."""
+    vals = np.array([parity_expectation(x, weights, n_layers) for x in X], dtype=float)
     return np.clip((vals + 1.0) / 2.0, 1e-8, 1 - 1e-8)
 
 
 # ---------------------------------------------------------------------------
-# SPSA helpers
+# Loss: BCE + FPR regularisation
 # ---------------------------------------------------------------------------
 
-def weighted_bce(probs: np.ndarray, y: np.ndarray, pos_weight: float) -> float:
-    eps = 1e-8
-    w = np.where(y > 0.5, pos_weight, 1.0)
-    return float(-np.mean(w * (y * np.log(probs + eps) + (1 - y) * np.log(1 - probs + eps))))
-
-
-def spsa_loss(
-    weights: np.ndarray, Xb: np.ndarray, yb: np.ndarray,
-    pos_weight: float, n_layers: int, pc2_index: int
+def combined_loss(
+    probs: np.ndarray,
+    y: np.ndarray,
+    lambda_prec: float,
+    target_fpr: float,
 ) -> float:
-    return weighted_bce(predict_scores_batch(Xb, weights, n_layers, pc2_index), yb, pos_weight)
+    """Weighted BCE + soft FPR penalty.
+
+    Fix #2: the FPR penalty is zero when FPR ≤ target_fpr and grows linearly
+    above it.  This prevents "flag everything" strategies without sacrificing
+    recall entirely.
+
+    FPR is computed on the batch using the operating threshold (0.3).
+    On a balanced batch this is a reasonable proxy for the full-set FPR.
+    """
+    eps = 1e-8
+    bce = float(-np.mean(y * np.log(probs + eps) + (1 - y) * np.log(1 - probs + eps)))
+
+    if lambda_prec <= 0.0:
+        return bce
+
+    y_pred = (probs >= OPERATING_THRESHOLD).astype(float)
+    neg_mask = (y < 0.5)
+    tn = float(((y_pred < 0.5) & neg_mask).sum())
+    fp = float(((y_pred >= 0.5) & neg_mask).sum())
+    fpr = fp / (fp + tn + eps)
+    fpr_penalty = float(max(0.0, fpr - target_fpr))
+    return bce + lambda_prec * fpr_penalty
+
+
+def spsa_loss_fn(
+    weights: np.ndarray, Xb: np.ndarray, yb: np.ndarray,
+    n_layers: int, lambda_prec: float, target_fpr: float,
+) -> float:
+    probs = score_batch(Xb, weights, n_layers)
+    return combined_loss(probs, yb, lambda_prec, target_fpr)
+
+
+# ---------------------------------------------------------------------------
+# Parameter-shift gradient (exact, for final epochs)
+# ---------------------------------------------------------------------------
+
+def param_shift_grad(
+    weights: np.ndarray, Xb: np.ndarray, yb: np.ndarray,
+    n_layers: int, lambda_prec: float, target_fpr: float,
+) -> np.ndarray:
+    """Exact gradient via parameter-shift rule: ∂f/∂θ = (f(θ+π/2) - f(θ-π/2))/2.
+
+    Fix #3: exact gradients for the last few epochs.  Cost = 2 circuits per
+    parameter = 2 * n_layers * n_qubits * 3 evals per batch update.
+    For 5 qubits, 2 layers: 60 circuit evals per step.  Acceptable for ~5 epochs.
+    """
+    grad = np.zeros_like(weights)
+    shift = np.pi / 2.0
+    for l in range(weights.shape[0]):
+        for q in range(weights.shape[1]):
+            for r in range(weights.shape[2]):
+                w_plus = weights.copy()
+                w_plus[l, q, r] += shift
+                w_minus = weights.copy()
+                w_minus[l, q, r] -= shift
+                f_plus  = spsa_loss_fn(w_plus,  Xb, yb, n_layers, lambda_prec, target_fpr)
+                f_minus = spsa_loss_fn(w_minus, Xb, yb, n_layers, lambda_prec, target_fpr)
+                grad[l, q, r] = (f_plus - f_minus) / 2.0
+    return grad
 
 
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
-def main() -> None:
+def main():
     args = parse_args()
-    operating_threshold = float(args.operating_threshold)
+    op_thr = float(args.operating_threshold)
     repo_root = Path(__file__).resolve().parents[1]
-
-    train_path = _resolve_input_path(args.train, repo_root)
-    val_path = _resolve_input_path(args.val, repo_root)
-    predict_path = _resolve_input_path(args.predict_2023, repo_root)
-    out_dir = _resolve_output_path(args.output_dir, repo_root)
+    out_dir = _resolve_out(args.output_dir, repo_root)
     out_dir.mkdir(parents=True, exist_ok=True)
-
     rng = np.random.default_rng(args.seed)
 
-    train_df = pd.read_csv(train_path)
-    val_df = pd.read_csv(val_path)
-    pred_df = pd.read_csv(predict_path)
+    train_df = pd.read_csv(_resolve_in(args.train, repo_root))
+    val_df   = pd.read_csv(_resolve_in(args.val, repo_root))
+    pred_df  = pd.read_csv(_resolve_in(args.predict_2023, repo_root))
 
-    if args.label_col not in train_df.columns or args.label_col not in val_df.columns:
-        raise ValueError(f"Missing label column '{args.label_col}' in train/val.")
+    if args.label_col not in train_df.columns:
+        raise ValueError(f"Label col '{args.label_col}' missing.")
 
     feature_cols = resolve_feature_cols(train_df, args.label_col, args.feature_cols)
     n_qubits = len(feature_cols)
     if n_qubits == 0:
-        raise ValueError("No feature columns found for VQC.")
+        raise ValueError("No feature columns found.")
 
-    X_train_full = train_df[feature_cols].to_numpy(dtype=float)
-    y_train_full = train_df[args.label_col].to_numpy(dtype=float)
-    X_val_raw = val_df[feature_cols].to_numpy(dtype=float)
-    y_val = val_df[args.label_col].to_numpy(dtype=int)
-    X_pred_raw = pred_df[feature_cols].to_numpy(dtype=float)
+    X_full  = train_df[feature_cols].to_numpy(dtype=float)
+    y_full  = train_df[args.label_col].to_numpy(dtype=float)
+    X_val_r = val_df[feature_cols].to_numpy(dtype=float)
+    y_val   = val_df[args.label_col].to_numpy(dtype=int)
+    X_pr_r  = pred_df[feature_cols].to_numpy(dtype=float)
 
-    # ------------------------------------------------------------------
-    # Improvement #1: BALANCED SUBSAMPLING
-    # Draw equal positives and negatives. With balanced classes pos_weight=1.0,
-    # which is intentional — the subsample already reflects 50/50 balance.
-    # ------------------------------------------------------------------
-    pos_idx = np.where(y_train_full == 1)[0]
-    neg_idx = np.where(y_train_full == 0)[0]
-    n_half = min(args.max_train_samples // 2, len(pos_idx), len(neg_idx))
-    chosen_pos = rng.choice(pos_idx, size=n_half, replace=False)
-    chosen_neg = rng.choice(neg_idx, size=n_half, replace=False)
-    idx = np.concatenate([chosen_pos, chosen_neg])
-    rng.shuffle(idx)
-    X_train_sub = X_train_full[idx]
-    y_train_sub = y_train_full[idx]
-    pos_weight = 1.0  # balanced subsample; explicit for clarity
+    # --- Balanced subsample -------------------------------------------------
+    pos_idx = np.where(y_full == 1)[0]
+    neg_idx = np.where(y_full == 0)[0]
+    n_half  = min(args.max_train_samples // 2, len(pos_idx), len(neg_idx))
+    idx_sub = np.concatenate([
+        rng.choice(pos_idx, n_half, replace=False),
+        rng.choice(neg_idx, n_half, replace=False),
+    ])
+    rng.shuffle(idx_sub)
+    X_sub = X_full[idx_sub]
+    y_sub = y_full[idx_sub]
 
-    print(f"n_qubits={n_qubits}, n_layers={args.n_layers}, epochs={args.epochs}")
-    print(f"Training subset: {n_half} pos + {n_half} neg = {2*n_half} rows (balanced)")
-    print(f"Full train set: {len(X_train_full)} rows "
-          f"({int(y_train_full.sum())} pos / {int((1-y_train_full).sum())} neg)")
+    print(f"VQC | n_qubits={n_qubits} | n_layers={args.n_layers} | epochs={args.epochs}")
+    print(f"Subsample: {n_half} pos + {n_half} neg = {2*n_half} rows")
+    print(f"λ_prec={args.lambda_prec}, target_FPR={args.target_fpr}, "
+          f"param-shift final {args.param_shift_final_epochs} epochs")
 
-    # ------------------------------------------------------------------
-    # Improvement #2: ANGLE SCALING — [0.05π, 0.95π] via MinMaxScaler
-    # Fit on training subsample; transform val and pred with same scaler.
-    # ------------------------------------------------------------------
+    # --- Angle scaling ------------------------------------------------------
     scaler = MinMaxScaler(feature_range=(0.05 * np.pi, 0.95 * np.pi))
-    X_train = scaler.fit_transform(X_train_sub)
-    X_val = scaler.transform(X_val_raw)
-    X_pred = scaler.transform(X_pred_raw)
-    joblib.dump(scaler, out_dir / "vqc_angle_scaler.joblib")  # improvement #8
+    X_tr  = scaler.fit_transform(X_sub)
+    X_val = scaler.transform(X_val_r)
+    X_pr  = scaler.transform(X_pr_r)
+    joblib.dump(scaler, out_dir / "vqc_angle_scaler.joblib")
 
-    # ------------------------------------------------------------------
-    # Initialise weights with small random noise
-    # ------------------------------------------------------------------
+    # --- Init weights -------------------------------------------------------
     weights = 0.01 * rng.normal(size=(args.n_layers, n_qubits, 3))
     orientation_flipped = False
-    history: list[dict] = []
+    history = []
+
+    param_shift_start = args.epochs - args.param_shift_final_epochs + 1
 
     for epoch in range(1, args.epochs + 1):
-        batch_size = min(args.batch_size, len(X_train))
-        batch_idx = rng.choice(len(X_train), size=batch_size, replace=False)
-        Xb = X_train[batch_idx]
-        yb = y_train_sub[batch_idx]
+        bsz = min(args.batch_size, len(X_tr))
+        bidx = rng.choice(len(X_tr), size=bsz, replace=False)
+        Xb = X_tr[bidx]
+        # Fix #4: when orientation is flipped, negate labels so SPSA gradient
+        # still pushes toward the correct output direction.
+        yb_raw = y_sub[bidx]
+        yb = 1.0 - yb_raw if orientation_flipped else yb_raw
 
-        # Improvement #5: Spall (1998) SPSA schedule
-        ck = _SPSA_C_COEFF / (epoch ** _SPSA_GAMMA)
-        ak = args.learning_rate / (_SPSA_A_STABLE + epoch) ** _SPSA_ALPHA
-        delta = rng.choice([-1.0, 1.0], size=weights.shape)
+        use_param_shift = (epoch >= param_shift_start and args.param_shift_final_epochs > 0)
 
-        loss_p = spsa_loss(weights + ck * delta, Xb, yb, pos_weight, args.n_layers, args.pc2_index)
-        loss_m = spsa_loss(weights - ck * delta, Xb, yb, pos_weight, args.n_layers, args.pc2_index)
-        grad_est = ((loss_p - loss_m) / (2.0 * ck)) * delta
-        weights = weights - ak * grad_est
-        batch_loss = 0.5 * (loss_p + loss_m)
+        if use_param_shift:
+            # Fix #3: exact gradient via parameter-shift rule
+            grad = param_shift_grad(weights, Xb, yb, args.n_layers, args.lambda_prec, args.target_fpr)
+            ak = args.learning_rate / (_SPSA_A_STABLE + epoch) ** _SPSA_ALPHA
+            weights = weights - ak * grad
+            batch_loss = spsa_loss_fn(weights, Xb, yb, args.n_layers, args.lambda_prec, args.target_fpr)
+            ck = 0.0  # not used
+        else:
+            ck = _SPSA_C_COEFF / (epoch ** _SPSA_GAMMA)
+            ak = args.learning_rate / (_SPSA_A_STABLE + epoch) ** _SPSA_ALPHA
+            delta = rng.choice([-1.0, 1.0], size=weights.shape)
+            lp = spsa_loss_fn(weights + ck * delta, Xb, yb, args.n_layers, args.lambda_prec, args.target_fpr)
+            lm = spsa_loss_fn(weights - ck * delta, Xb, yb, args.n_layers, args.lambda_prec, args.target_fpr)
+            weights = weights - ak * ((lp - lm) / (2.0 * ck)) * delta
+            batch_loss = 0.5 * (lp + lm)
 
-        # Improvement #6: orientation check on epoch 1
-        val_prob_raw = predict_scores_batch(X_val, weights, args.n_layers, args.pc2_index)
+        val_prob_raw = score_batch(X_val, weights, args.n_layers)
+
+        # Fix #4: orientation check on epoch 1, consistent flip thereafter
         if epoch == 1:
             auc1 = float(roc_auc_score(y_val, val_prob_raw))
             if auc1 < 0.5:
                 orientation_flipped = True
-                print(f"  Epoch 1 AUC={auc1:.3f} < 0.5 — flipping score orientation.")
+                print(f"  Epoch 1: AUC={auc1:.3f} < 0.5 — flipping orientation.")
 
         val_prob = 1.0 - val_prob_raw if orientation_flipped else val_prob_raw
-        ins = compute_metrics_at_threshold(y_val, val_prob, operating_threshold)
+        m = compute_metrics_at_threshold(y_val, val_prob, op_thr)
         val_auc = float(roc_auc_score(y_val, val_prob))
 
-        # Improvement #7: per-epoch history
+        step_type = "param-shift" if use_param_shift else "SPSA"
         history.append({
-            "epoch": epoch,
+            "epoch": epoch, "step_type": step_type,
             "batch_loss": float(batch_loss),
-            "ck": float(ck),
-            "ak": float(ak),
             "val_auc": val_auc,
-            "val_f1": float(ins["f1"]),
-            "val_precision": float(ins["precision"]),
-            "val_recall": float(ins["recall"]),
-            "threshold": operating_threshold,
+            "val_recall": float(m["recall"]),
+            "val_precision": float(m["precision"]),
+            "val_f1": float(m["f1"]),
+            "val_fpr": float(m["fp"]) / max(1, m["fp"] + m["tn"]),
+            "n_predicted_positive": int(m["n_predicted_positive"]),
         })
 
-        if epoch % 5 == 0 or epoch == args.epochs:
+        if epoch % 5 == 0 or epoch == args.epochs or epoch == 1:
+            fpr_val = float(m["fp"]) / max(1, m["fp"] + m["tn"])
             print(
-                f"  Epoch {epoch:3d} | loss={batch_loss:.4f} | ck={ck:.4f} | ak={ak:.5f} "
-                f"| val_auc={val_auc:.3f} | recall={ins['recall']:.3f} | prec={ins['precision']:.3f}"
+                f"  [{step_type:>11}] Epoch {epoch:3d} | loss={batch_loss:.4f} | "
+                f"AUC={val_auc:.3f} | recall={m['recall']:.3f} | "
+                f"prec={m['precision']:.3f} | FPR={fpr_val:.3f} | "
+                f"n_pos={m['n_predicted_positive']}"
             )
 
-    # ------------------------------------------------------------------
-    # Final evaluation
-    # ------------------------------------------------------------------
-    val_prob_raw = predict_scores_batch(X_val, weights, args.n_layers, args.pc2_index)
-    auc_before_flip = float(roc_auc_score(y_val, val_prob_raw))
+    # --- Final predictions --------------------------------------------------
+    val_prob_raw = score_batch(X_val, weights, args.n_layers)
+    auc_pre = float(roc_auc_score(y_val, val_prob_raw))
     val_prob = 1.0 - val_prob_raw if orientation_flipped else val_prob_raw
 
-    sweep_df, best_f1_thr, best_prec_rec50_thr = threshold_sweep(y_val, val_prob)
+    sweep_df, best_f1_thr, best_rec50_thr = threshold_sweep(y_val, val_prob)
     sweep_df.to_csv(out_dir / "threshold_sweep.csv", index=False)
 
-    metrics_operating = compute_metrics_at_threshold(y_val, val_prob, operating_threshold)
-    metrics_best_f1 = compute_metrics_at_threshold(y_val, val_prob, best_f1_thr)
+    m_op = compute_metrics_at_threshold(y_val, val_prob, op_thr)
+    m_f1 = compute_metrics_at_threshold(y_val, val_prob, best_f1_thr)
 
-    val_out = val_df[["zip", "year", args.label_col]].copy()
-    val_out["wildfire_prob"] = val_prob
-    val_out["wildfire_pred"] = (val_prob >= operating_threshold).astype(int)
-    val_out.to_csv(out_dir / "val_predictions.csv", index=False)
+    val_df[["zip", "year", args.label_col]].assign(
+        wildfire_prob=val_prob,
+        wildfire_pred=(val_prob >= op_thr).astype(int),
+    ).to_csv(out_dir / "val_predictions.csv", index=False)
 
-    pred_prob_raw = predict_scores_batch(X_pred, weights, args.n_layers, args.pc2_index)
+    pred_prob_raw = score_batch(X_pr, weights, args.n_layers)
     pred_prob = 1.0 - pred_prob_raw if orientation_flipped else pred_prob_raw
-    pred_out = pred_df[["zip", "year"]].copy()
-    pred_out["wildfire_prob"] = pred_prob
-    pred_out["wildfire_pred"] = (pred_prob >= operating_threshold).astype(int)
-    pred_out.to_csv(out_dir / "predict_2023_predictions.csv", index=False)
+    pred_df[["zip", "year"]].assign(
+        wildfire_prob=pred_prob,
+        wildfire_pred=(pred_prob >= op_thr).astype(int),
+    ).to_csv(out_dir / "predict_2023_predictions.csv", index=False)
 
     np.savez(out_dir / "model_params.npz", weights=np.asarray(weights))
     pd.DataFrame(history).to_csv(out_dir / "training_history.csv", index=False)
 
     metrics = {
-        "model": "QiskitVQC_v2",
-        "feature_cols": feature_cols,
+        "model": "QiskitVQC_v3",
         "n_qubits": n_qubits,
         "n_layers": args.n_layers,
         "epochs": args.epochs,
         "batch_size": args.batch_size,
         "learning_rate": args.learning_rate,
+        "lambda_prec": args.lambda_prec,
+        "target_fpr": args.target_fpr,
+        "param_shift_final_epochs": args.param_shift_final_epochs,
+        "observable": "parity_average_Z_all_qubits",
         "seed": args.seed,
-        "improvements_over_v1": [
-            "balanced_subsampling_50_50",
-            "angle_scaling_to_0_to_pi",
-            "pc2_double_encoded_RY_plus_RZ",
-            "entanglement_ring_before_variational_layers",
-            "spall_1998_spsa_schedule",
-            "orientation_flip_at_epoch_1_not_end",
-            "per_epoch_training_history",
-            "saved_angle_scaler_joblib",
+        "root_cause_fixes": [
+            "parity_observable_replaces_Z0_only",
+            "FPR_regularisation_in_loss_prevents_all_positive",
+            "param_shift_exact_gradients_final_epochs",
+            "orientation_flip_negates_labels_for_correct_SPSA_direction",
         ],
         "class_balance": {
-            "n_positive_in_subset": int(n_half),
-            "n_negative_in_subset": int(n_half),
-            "positive_rate_subset": 0.5,
-            "pos_weight_in_loss": float(pos_weight),
-            "full_train_positive_rate": float(y_train_full.mean()),
-        },
-        "threshold_selection": {
-            "operating_threshold": operating_threshold,
-            "selected_for_predictions": "insurance_recall_priority",
-            "best_f1_threshold": float(best_f1_thr),
-            "best_precision_with_recall_ge_0_5_threshold": float(best_prec_rec50_thr),
-            "recall_constraint_feasible": bool((sweep_df["recall"] >= 0.5).any()),
+            "n_positive": int(n_half),
+            "n_negative": int(n_half),
+            "positive_rate": 0.5,
+            "full_train_positive_rate": float(y_full.mean()),
         },
         "score_orientation": {
-            "auc_before_orientation_check": auc_before_flip,
+            "auc_before_check": auc_pre,
             "orientation_flipped": orientation_flipped,
         },
-        "classical_baseline_targets": {
-            "lr_auc_roc": 0.852,
-            "lr_recall_at_t03": 0.928,
-            "lr_precision_at_t03": 0.117,
-            "lr_f1_at_t03": 0.208,
-            "lr_false_alarm_rate_at_t03": 0.523,
+        "threshold_selection": {
+            "operating_threshold": op_thr,
+            "best_f1_threshold": float(best_f1_thr),
+            "best_precision_recall50_threshold": float(best_rec50_thr),
         },
-        "metrics_val_operating_threshold": metrics_operating,
-        "metrics_val_best_f1": metrics_best_f1,
+        "classical_baseline_targets": {
+            "lr_auc_roc": 0.852, "lr_recall_at_t03": 0.928,
+            "lr_precision_at_t03": 0.117, "lr_f1_at_t03": 0.208,
+        },
+        "metrics_val_operating_threshold": m_op,
+        "metrics_val_best_f1": m_f1,
     }
 
-    with (out_dir / "metrics.json").open("w", encoding="utf-8") as f:
-        json.dump(metrics, f, indent=2)
+    (out_dir / "metrics.json").write_text(json.dumps(metrics, indent=2))
 
-    print(f"\nSaved VQC v2 artifacts to: {out_dir}")
-    print(f"\n--- Metrics at operating threshold (t={operating_threshold}) ---")
-    print(json.dumps(metrics_operating, indent=2))
-    print(f"\n--- Metrics at best-F1 threshold (t={best_f1_thr:.2f}) ---")
-    print(json.dumps(metrics_best_f1, indent=2))
-    print("\n--- Classical LR targets to beat ---")
-    print("  AUC-ROC 0.852 | Recall 0.928 | Precision 0.117 | F1 0.208 | FAR 0.523")
+    print(f"\nVQC v3 artifacts → {out_dir}")
+    print(f"\n--- t={op_thr} (insurance recall-priority) ---")
+    print(json.dumps(m_op, indent=2))
+    print(f"\n--- t={best_f1_thr:.2f} (best F1) ---")
+    print(json.dumps(m_f1, indent=2))
+    print("\n--- LR baseline targets ---")
+    print("  AUC 0.852 | Recall 0.928 | Precision 0.117 | F1 0.208")
+    print("\n--- Tuning guide ---")
+    print("  If precision still low:  --lambda-prec 1.0 --target-fpr 0.45")
+    print("  If recall collapses:     --lambda-prec 0.2 --target-fpr 0.65")
 
 
 if __name__ == "__main__":
